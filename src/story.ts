@@ -440,7 +440,7 @@ export const steps: Step[] = [
         draw: [0.05, 0.5],
         trace: true,
       },
-      { type: "route", via: ["thasos", [24.3, 40.72], "eion"], side: "athens", style: "fleet", ships: 7, tag: "修昔底德", draw: [0.45, 0.62] },
+      { type: "route", via: ["thasos", [24.3, 40.72], "eion"], side: "athens", style: "fleet", ships: 7, tag: "修昔底德", tagBelow: true, draw: [0.45, 0.62] },
       { type: "pulse", place: "amphipolis", side: "sparta", at: [0.5, 0.95] },
     ],
   },
@@ -735,7 +735,8 @@ export const allegiance: Partial<Record<PlaceId, Array<[string, Side | "ruined"]
   chalcis: [["two-powers", "athens"], ["persia", "sparta"]],
   eretria: [["two-powers", "athens"], ["persia", "sparta"]],
   aegina: [["two-powers", "athens"], ...lostAfterAegospotami],
-  andros: [["two-powers", "athens"], ...lostAfterAegospotami],
+  // In revolt from Athens by 407 (Xenophon, Hellenica 1.4.21).
+  andros: [["two-powers", "athens"], ["persia", "sparta"]],
   naxos: [["two-powers", "athens"], ...lostAfterAegospotami],
   delos: [["two-powers", "athens"], ...lostAfterAegospotami],
   samos: [["two-powers", "athens"]],
@@ -775,7 +776,8 @@ export const allegiance: Partial<Record<PlaceId, Array<[string, Side | "ruined"]
   tarentum: [["two-powers", "neutral"]],
   croton: [["two-powers", "neutral"]],
   argos: [["two-powers", "neutral"]],
-  melos: [["two-powers", "neutral"], ["melos", "ruined"]],
+  // Lysander brought the surviving Melians home after Aegospotami (Hellenica 2.2.9).
+  melos: [["two-powers", "neutral"], ["melos", "ruined"], ["collapse", "sparta"]],
   thera: [["two-powers", "neutral"], ["plague", "athens"]],
   sardis: [["two-powers", "persia"]],
 };

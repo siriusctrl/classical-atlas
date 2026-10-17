@@ -12,12 +12,15 @@ npm run dev        # http://localhost:5173/
 npm run check      # type-check and build into dist/
 ```
 
-`?p=4.5` freezes the story at a progress value (step index + fraction); `&t=0` fixes the ambient clock. `window.__atlas.render(P, time)` does the same from a script.
+Move between steps with the wheel, arrow keys, swipes, the controls, or the chapter strip; play turns the story into a paced, video-like sequence. Drag, pinch, double-click, or Ctrl+wheel to explore the map, and hover or tap a city for its note.
+
+`?step=12&t=4` freezes step 12 four seconds after it was entered; `#sicily` deep-links to a step. `window.__atlas.freeze(step, seconds)` does the same from a script.
 
 ## How it works
 
 - `src/story.ts` holds the narrative steps, cameras, map marks, insets, full-screen quotes, and the alliance timeline.
-- `src/main.ts` renders each frame as a pure function of story progress. Scrolling, the play button, and frame capture all choose a progress value, so the same scenes can later be rendered to video frame by frame.
+- `src/main.ts` renders each frame as a pure function of the current step and the time since it began. Navigation, autoplay, and frame capture all choose a step and a time, so the same scenes can later be rendered to video frame by frame.
+- `src/placeNotes.ts` holds the tooltip note for each place.
 - `scripts/build-land.mjs` clips Natural Earth 10m land to the Mediterranean, simplifies it, and bakes it into `src/data/land.json` (`npm run build:land`).
 - `docs/research.md` is the verified source brief behind the narrative.
 

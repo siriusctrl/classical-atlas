@@ -24,9 +24,11 @@ page.on("pageerror", (error) => errors.push(String(error)));
 
 await page.goto(base, { waitUntil: "networkidle" });
 await page.waitForTimeout(800);
-await page.click(".play");
+await page.click(".begin");
 const started = Date.now();
-while (Date.now() - started < 15 * 60 * 1000) {
+// ATLAS_SECONDS caps the recording, for spot checks of pacing.
+const limit = Number(process.env.ATLAS_SECONDS ?? 30 * 60) * 1000;
+while (Date.now() - started < limit) {
   await page.waitForTimeout(1000);
   if ((await page.getAttribute(".play", "aria-pressed")) === "false") break;
 }

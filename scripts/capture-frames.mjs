@@ -1,16 +1,16 @@
-// Capture story frames at chosen progress values.
+// Capture frozen story frames.
 //
 //   npm run preview -- --port 4500 &
-//   node scripts/capture-frames.mjs <outdir> <width> <height> <light|dark> <P,P,...> [scroll|frozen]
+//   node scripts/capture-frames.mjs <outdir> <width> <height> <light|dark> <frames>
 //
-// "scroll" (default) scrolls the real page so cards and map agree; "frozen" uses ?p= and
-// hides the cards, which isolates the map. Frames land in <outdir> as 000.png, 001.png, ...
+// <frames> is a comma-separated list of "step:seconds" (seconds since the step was entered,
+// e.g. 8:4.5) or legacy progress values like 8.6. Frames land in <outdir> as 000.png, 001.png…
 import { mkdirSync } from "node:fs";
 import { chromium } from "@playwright/test";
 
-const [out, width, height, scheme, list, mode = "scroll"] = process.argv.slice(2);
+const [out, width, height, scheme, list] = process.argv.slice(2);
 if (!out || !list) {
-  console.error("usage: capture-frames.mjs <outdir> <width> <height> <light|dark> <P,P,...> [scroll|frozen]");
+  console.error("usage: capture-frames.mjs <outdir> <width> <height> <light|dark> <step:seconds,...>");
   process.exit(1);
 }
 const base = process.env.ATLAS_URL ?? "http://localhost:4500/";
@@ -22,27 +22,13 @@ const page = await browser.newPage({
   colorScheme: scheme,
   deviceScaleFactor: 1,
 });
-const values = list.split(",").map(Number);
 
-if (mode === "scroll") await page.goto(base, { waitUntil: "networkidle" });
-for (const [index, P] of values.entries()) {
-  if (mode === "scroll") {
-    // Scroll so the reading line sits at fraction f of step i, matching progressFromScroll().
-    await page.evaluate((P) => {
-      const sections = [...document.querySelectorAll(".step")];
-      const step = Math.floor(P);
-      const section = sections[step];
-      const line = innerWidth <= 760 ? 0.62 : 0.5;
-      const top = section.getBoundingClientRect().top + scrollY;
-      scrollTo(0, top + (P - step) * section.offsetHeight - innerHeight * line);
-    }, P);
-    // Let the card entrance transition finish.
-    await page.waitForTimeout(1000);
-  } else {
-    await page.goto(`${base}?p=${P}&t=0`, { waitUntil: "networkidle" });
-    await page.addStyleTag({ content: ".story,.sources{display:none}" });
-    await page.waitForTimeout(100);
-  }
+for (const [index, token] of list.split(",").entries()) {
+  const [step, seconds] = token.split(":");
+  const query = seconds === undefined ? `p=${step}` : `step=${step}&t=${seconds}`;
+  await page.goto(`${base}?${query}`, { waitUntil: "networkidle" });
+  // Let the card entrance transition finish.
+  await page.waitForTimeout(900);
   await page.screenshot({ path: `${out}/${String(index).padStart(3, "0")}.png` });
 }
 await browser.close();

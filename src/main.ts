@@ -8,6 +8,7 @@ import { interpolateRgb, interpolateZoom, type ZoomView } from "d3-interpolate";
 import land from "./data/land.json";
 import credits from "../public/media/credits.json";
 import { places, type PlaceId, type Side } from "./places";
+import { placeNotes } from "./placeNotes";
 import {
   allegiance,
   phases,
@@ -21,16 +22,16 @@ import {
   type Window as Span,
 } from "./story";
 
-// Every frame is a pure function of story progress P (step index + fraction through that
-// step) plus an ambient clock for small idle motion. Scrolling, the play button, and frame
-// capture all just choose a P.
+// Every frame is a pure function of the current step, the time since it was entered, and an
+// ambient clock for small idle motion. Navigation, autoplay, and frame capture all just pick
+// a step and a time; exploring detaches only the camera.
 
 type XY = [number, number];
 type Point = PlaceId | XY;
 
 const SVG = "http://www.w3.org/2000/svg";
-const CAMERA_START = 0.6;
-const FADE_OUT: Span = [0.8, 0.97];
+// Seconds a step's map animation takes once the camera has (mostly) arrived.
+const ANIMATION_SECONDS = 6;
 const RULER = { from: 432, to: 404, labelled: [431, 421, 413, 404] };
 
 const projection = geoConicConformal()
@@ -57,7 +58,6 @@ const backOut = (t: number) => {
 };
 const band = (value: number, [a, b, c, d]: [number, number, number, number]) =>
   smooth((value - a) / (b - a)) * (1 - smooth((value - c) / (d - c)));
-const stepFade = (f: number) => 1 - smooth(within(f, FADE_OUT));
 const indexOf = new Map(steps.map((step, index) => [step.id, index]));
 const fixed = (value: number) => value.toFixed(1);
 
@@ -92,8 +92,15 @@ const dim = document.querySelector<HTMLElement>(".map-dim")!;
 const yearNumber = document.querySelector<HTMLElement>(".year-number")!;
 const ruler = document.querySelector<HTMLElement>(".ruler")!;
 const insetElement = document.querySelector<HTMLElement>(".map-inset")!;
-const story = document.querySelector<HTMLElement>(".story")!;
+const panel = document.querySelector<HTMLElement>(".panel")!;
+const quoteLayer = document.querySelector<HTMLElement>(".quote-layer")!;
 const playButton = document.querySelector<HTMLButtonElement>(".play")!;
+const speedButton = document.querySelector<HTMLButtonElement>(".speed")!;
+const counter = document.querySelector<HTMLElement>(".counter")!;
+const progressBar = document.querySelector<HTMLElement>(".autoplay-progress span")!;
+const chapters = document.querySelector<HTMLElement>(".chapters")!;
+const tooltip = document.querySelector<HTMLElement>(".tooltip")!;
+const recenter = document.querySelector<HTMLButtonElement>(".recenter")!;
 const series = document.querySelector<HTMLElement>(".masthead-series")!;
 
 const layout = { width: 0, height: 0, mobile: false, fit: 1, stage: { x: 0, y: 0, w: 0, h: 0 } };
@@ -104,10 +111,10 @@ const measure = () => {
   layout.mobile = layout.width <= 760;
   // The stage is the part of the screen the cards leave free; cameras centre on it.
   layout.stage = layout.mobile
-    ? { x: 0, y: 110, w: layout.width, h: layout.height * 0.42 - 70 }
+    ? { x: 0, y: 96, w: layout.width, h: layout.height * 0.5 - 96 }
     : layout.width >= 1100
-      ? { x: 490, y: 60, w: layout.width - 490, h: layout.height - 170 }
-      : { x: 0, y: 60, w: layout.width, h: layout.height - 170 };
+      ? { x: 500, y: 60, w: layout.width - 500, h: layout.height - 190 }
+      : { x: 0, y: 60, w: layout.width, h: layout.height - 190 };
   layout.fit = Math.min(layout.stage.w / land.width, layout.stage.h / land.height);
   svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
 };
@@ -146,24 +153,6 @@ const paintGrain = () => {
 const viewOf = (camera: Camera): ZoomView => {
   const [x, y] = toWorld(camera.at);
   return [x, y, layout.stage.w / (layout.fit * camera.zoom)];
-};
-
-let cameraPaths: ((t: number) => ZoomView)[] = [];
-const buildCameraPaths = () => {
-  cameraPaths = steps.slice(0, -1).map((step, index) =>
-    interpolateZoom(viewOf(step.camera), viewOf(steps[index + 1].camera)),
-  );
-};
-
-const cameraAt = (P: number) => {
-  const index = Math.min(Math.floor(P), steps.length - 1);
-  const f = P - index;
-  const view = index < steps.length - 1 && f > CAMERA_START
-    ? cameraPaths[index](easeInOut(within(f, [CAMERA_START, 1])))
-    : viewOf(steps[index].camera);
-  // A slow push-in while the title holds.
-  const push = index === 0 ? 1 + 0.07 * smooth(f / CAMERA_START) : 1;
-  return { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
 };
 
 // ---------- Static map ----------
@@ -652,14 +641,22 @@ const placeNodes = placeIds.map((id) => {
   const debris = changes.some((change) => change.side === "ruined")
     ? Array.from({ length: 12 }, () => svgElement("circle", { r: 1.6 }, effectLayer))
     : [];
-  return { id, world: toWorld(id), major, changes, gradient, stops, glow, ripple, ring, dot, label, debris, offset: [dx, dy] as XY };
+  return {
+    id, world: toWorld(id), major, changes, gradient, stops, glow, ripple, ring, dot, label, debris,
+    offset: [dx, dy] as XY,
+    // Read by hover hit-testing and the tooltip.
+    screen: [0, 0] as XY,
+    visible: 0,
+    side: undefined as Side | "ruined" | undefined,
+  };
 });
 
 const colorOf = (side: Side | "ruined") => (side === "ruined" ? colors.land : colors[side]);
 
-const renderPlaces = (P: number, dimmed: number, time: number) => {
-  const index = Math.min(Math.floor(P), steps.length - 1);
-  const f = P - index;
+let hovered: PlaceId | undefined;
+
+const renderPlaces = (frame: Frame, dimmed: number) => {
+  const { P, step, previous: lastStep, enter, leave, time } = frame;
   for (const node of placeNodes) {
     let presence = 0;
     let fill = colors.neutral;
@@ -680,21 +677,30 @@ const renderPlaces = (P: number, dimmed: number, time: number) => {
       if (change.side === "ruined") {
         ruined = k;
         stroke = interpolateRgb(colors.land, colors.ruined)(k);
+      } else if (previous?.side === "ruined") {
+        // Resettled: the survivors return and the city takes a side again.
+        ruined = 1 - k;
+        stroke = interpolateRgb(colors.ruined, colors.land)(k);
       }
       previous = change;
     }
 
-    const here = labelledAt[index].has(node.id);
-    const next = index + 1 < steps.length && labelledAt[index + 1].has(node.id);
-    const enter = here ? smooth(within(f, [0.02, 0.2])) : 0;
-    const leave = here && !next ? smooth(within(f, [0.78, 0.95])) : 0;
-    const arrive = next && !here ? smooth(within(f, [0.75, 0.95])) : 0;
-    const labelAlpha = Math.max(enter * (1 - leave), arrive, here && next ? enter : 0) * (1 - dimmed);
+    const here = labelledAt[step].has(node.id);
+    const before = lastStep !== undefined && labelledAt[lastStep].has(node.id);
+    const isHovered = hovered === node.id;
+    const labelAlpha = Math.max(
+      here ? (before ? 1 : smooth(enter * 1.6)) : 0,
+      !here && before ? 1 - smooth(leave) : 0,
+      isHovered ? 1 : 0,
+    ) * (1 - dimmed);
+    node.side = latest?.side;
 
     const [x, y] = screen(node.world);
     const alpha = Math.max(presence > 0 ? 1 : 0, labelAlpha);
     const pop = presence > 0 ? backOut(presence) : labelAlpha;
-    const radius = (node.major ? 6 : 4.2) * pop;
+    const radius = (node.major ? 6 : 4.2) * pop * (isHovered ? 1.45 : 1);
+    node.screen = [x, y];
+    node.visible = alpha * (1 - dimmed);
     set(node.dot, "cx", fixed(x));
     set(node.dot, "cy", fixed(y));
     set(node.dot, "r", Math.max(radius, 0).toFixed(2));
@@ -761,13 +767,12 @@ const yearText = (index: number) => {
   return label ? label.replace(/公元前|年/g, "").replace(/\s*–\s*/, "–").trim() : String(steps[index].year);
 };
 
-const renderYear = (P: number) => {
-  const index = Math.min(Math.floor(P), steps.length - 1);
-  const t = index < steps.length - 1 ? easeInOut(within(P - index, [CAMERA_START, 1])) : 0;
-  const from = steps[index].year;
-  const to = steps[Math.min(index + 1, steps.length - 1)].year;
+const renderYear = ({ step, previous, enter }: Frame) => {
+  const t = previous === undefined ? 1 : easeInOut(enter);
+  const from = steps[previous ?? step].year;
+  const to = steps[step].year;
   const year = from + (to - from) * t;
-  const label = t <= 0.02 ? yearText(index) : t >= 0.98 ? yearText(index + 1) : String(Math.round(year));
+  const label = t >= 0.98 || from === to ? yearText(step) : String(Math.round(year));
   if (yearNumber.textContent !== label) yearNumber.textContent = label;
   rulerProgress.style.width = `${rulerX(year)}%`;
   rulerMarker.style.left = `${rulerX(year)}%`;
@@ -992,9 +997,7 @@ const buildTalent = () => {
   };
 };
 
-const renderInset = (P: number, time: number) => {
-  const index = Math.min(Math.floor(P), steps.length - 1);
-  const f = P - index;
+const renderInset = ({ step: index, f, enter, time }: Frame) => {
   const list = insetsOf(index);
   const startOf = (k: number) => list[k]?.at?.[0] ?? 0.1;
   let active = 0;
@@ -1014,26 +1017,35 @@ const renderInset = (P: number, time: number) => {
   const next = active + 1 < list.length ? startOf(active + 1) : 2;
   const appear = smooth(within(f, [start, start + 0.07]));
   const leave = smooth(within(f, [next - 0.08, next - 0.015]));
-  insetElement.style.opacity = String(appear * (1 - leave) * stepFade(f));
+  insetElement.style.opacity = String(appear * (1 - leave) * smooth(enter * 2));
   insetElement.style.transform = `translateY(${fixed((1 - appear) * 14)}px)`;
   insetUpdate(within(f, [start, end]), time);
 };
 
-// ---------- Dimming: title and quotes ----------
-
-const quoteSteps = steps.flatMap((step, index) => (step.quote ? [index] : []));
-let lastFilter = "";
-
-const dimAt = (P: number) => {
-  const opening = 0.82 * (1 - smooth(within(P, [0.5, 0.95])));
-  const quotes = Math.max(0, ...quoteSteps.map((index) => 0.92 * band(P - index, [-0.35, 0.05, 0.72, 1.02])));
-  return Math.max(opening, quotes);
-};
-
 // ---------- Frame ----------
 
-const render = (P: number, time: number) => {
-  const camera = cameraAt(P);
+type Frame = {
+  step: number;
+  // Fraction of the step's map animation, driven by time.
+  f: number;
+  // step + f: what allegiances, walls and traces are keyed to.
+  P: number;
+  previous: number | undefined;
+  // 0 → 1 over the camera move into this step.
+  enter: number;
+  // 0 → 1 as the previous step's marks, labels and dimming fade out.
+  leave: number;
+  camera: { x: number; y: number; scale: number };
+  time: number;
+};
+
+let lastFilter = "";
+
+const dimFor = (index: number | undefined) =>
+  index === undefined ? 0 : index === 0 ? 0.82 : steps[index].quote ? 0.92 : 0;
+
+const render = (frame: Frame) => {
+  const { camera, step, previous, f, P, enter, leave, time } = frame;
   const s = camera.scale;
   zoomNow = s / layout.fit;
   const ox = layout.stage.x + layout.stage.w / 2 - camera.x * s;
@@ -1044,39 +1056,42 @@ const render = (P: number, time: number) => {
   set(landGroup, "transform", transform);
   set(shadow, "transform", `translate(${(ox + 2.5).toFixed(2)},${(oy + 4).toFixed(2)}) scale(${s.toFixed(5)})`);
 
-  // The series name belongs to the title; later it would collide with cards scrolling past.
-  series.style.opacity = (1 - smooth(within(P, [0.6, 0.95]))).toFixed(3);
-  const dimmed = dimAt(P);
-  dim.style.opacity = dimmed.toFixed(3);
-  const blur = 5 * (1 - smooth(within(P, [0.45, 0.95])));
+  // Title and quotes dim the map; the dimming crossfades with the camera move.
+  const fade = smooth(leave);
+  const dimmed = previous === undefined
+    ? dimFor(step)
+    : dimFor(previous) + (dimFor(step) - dimFor(previous)) * smooth(enter);
+  dim.style.opacity = clamp01(dimmed).toFixed(3);
+  series.style.opacity = (step === 0 ? 1 : previous === 0 ? 1 - fade : 0).toFixed(3);
+  const blur = step === 0 ? 5 : previous === 0 ? 5 * (1 - fade) : 0;
   const filter = blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : "";
   if (filter !== lastFilter) svg.style.filter = lastFilter = filter;
 
-  const index = Math.min(Math.floor(P), steps.length - 1);
-  const f = P - index;
-  stepGroups.forEach(({ group, renderers }, stepIndex) => {
-    const active = stepIndex === index;
-    set(group, "display", active ? "inline" : "none");
-    if (active) renderers.forEach((draw) => draw(f, stepFade(f), time));
+  stepGroups.forEach(({ group, renderers }, index) => {
+    const current = index === step;
+    const outgoing = index === previous && index !== step && fade < 1;
+    set(group, "display", current || outgoing ? "inline" : "none");
+    if (current) renderers.forEach((draw) => draw(f, 1, time));
+    else if (outgoing) renderers.forEach((draw) => draw(1, 1 - fade, time));
   });
 
   // Traces are context for wide views; close-ups would show them as stray lines.
   const wide = 1 - smooth((zoomNow - 2.5) / 2);
   for (const trace of traces) {
-    const visible = P >= trace.index + 0.8 && wide > 0;
+    const visible = step > trace.index && wide > 0;
     set(trace.element, "d", visible ? pathData(trace.geometry.points) : "");
     set(trace.element, "stroke", colors[trace.mark.side]);
-    set(trace.element, "opacity", (smooth(within(P, [trace.index + 0.8, trace.index + 1])) * 0.6 * wide * (1 - dimmed)).toFixed(3));
+    set(trace.element, "opacity", (0.6 * wide * (1 - clamp01(dimmed))).toFixed(3));
   }
 
-  renderMapTexts(dimmed);
+  renderMapTexts(clamp01(dimmed));
   renderWalls(P);
-  renderPlaces(P, dimmed, time);
-  renderYear(P);
-  renderInset(P, time);
+  renderPlaces(frame, clamp01(dimmed));
+  renderYear(frame);
+  renderInset(frame);
 };
 
-// ---------- Story cards and scroll ----------
+// ---------- Story text ----------
 
 const roman = (value: number) => {
   const table: [number, string][] = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
@@ -1091,84 +1106,501 @@ const roman = (value: number) => {
   return text;
 };
 
-let chapter = 0;
-story.innerHTML = steps.map((step, index) => {
+// Chapter numbers skip the title and the quotations.
+let chapterCount = 0;
+const chapterOf = steps.map((step, index) => (index === 0 || step.quote ? undefined : ++chapterCount));
+const plainText = (html: string) => html.replace(/<cite>.*?<\/cite>/g, "").replace(/<[^>]+>/g, "");
+
+// How long autoplay holds a step at 1×: enough to read it, never shorter than its animation.
+const readingSeconds = (index: number) => {
+  const step = steps[index];
+  if (step.quote) return 3.5 + plainText(step.quote.text + (step.quote.note ?? "")).length / 5;
+  if (index === 0) return 9;
+  return Math.max(ANIMATION_SECONDS + 1.5, 2 + plainText(step.body.join("")).length / 8);
+};
+
+const stepLabel = (index: number) =>
+  index === 0 ? "序" : steps[index].quote ? "引文" : roman(chapterOf[index]!);
+
+const stepTitle = (index: number) =>
+  steps[index].quote ? `“${plainText(steps[index].quote!.text).slice(0, 18)}…”` : steps[index].title;
+
+const legendHTML = `<div class="legend">
+  <span style="--swatch: var(--athens)">雅典与盟邦</span>
+  <span style="--swatch: var(--sparta)">斯巴达与盟邦</span>
+  <span style="--swatch: var(--neutral)">中立</span>
+  <span style="--swatch: var(--persia)">波斯</span>
+  <span class="is-ruined">被毁</span>
+</div>`;
+
+const cardElement = (index: number) => {
+  const step = steps[index];
+  const element = document.createElement("article");
   if (step.quote) {
-    return `<section class="step is-quote" data-step="${index}">
-      <article class="card">
-        <span class="quote-mark" aria-hidden="true">“</span>
-        <p class="quote-text">${step.quote.text}</p>
-        <div class="quote-cite">${step.quote.cite}</div>
-        ${step.quote.note ? `<p class="quote-note">${step.quote.note}</p>` : ""}
-      </article>
-    </section>`;
+    element.className = "quote";
+    element.innerHTML = `<span class="quote-mark" aria-hidden="true">“</span>
+      <p class="quote-text">${step.quote.text}</p>
+      <div class="quote-cite">${step.quote.cite}</div>
+      ${step.quote.note ? `<p class="quote-note">${step.quote.note}</p>` : ""}`;
+    return element;
   }
-  const opening = index === 0;
-  if (!opening) chapter += 1;
-  return `<section class="step${opening ? " is-opening" : ""}" data-step="${index}">
-    <article class="card">
-      ${opening ? "" : `<span class="card-index">${roman(chapter)}</span>`}
-      <p class="card-kicker">${step.kicker}</p>
-      <h2>${step.title}</h2>
-      ${step.body.map((paragraph) => `<p>${paragraph}</p>`).join("")}
-      ${step.legend ? `<div class="legend">
-        <span style="--swatch: var(--athens)">雅典与盟邦</span>
-        <span style="--swatch: var(--sparta)">斯巴达与盟邦</span>
-        <span style="--swatch: var(--neutral)">中立</span>
-        <span style="--swatch: var(--persia)">波斯</span>
-        <span class="is-ruined">被毁</span>
-      </div>` : ""}
-      ${opening ? `<p class="scroll-hint">向下滚动，或点右上角“自动播放”</p>` : ""}
-    </article>
-  </section>`;
-}).join("");
-
-const sections = [...story.querySelectorAll<HTMLElement>(".step")];
-let sectionTops: number[] = [];
-let sectionHeights: number[] = [];
-
-const measureSections = () => {
-  sectionTops = sections.map((section) => section.offsetTop + story.offsetTop);
-  sectionHeights = sections.map((section) => section.offsetHeight);
+  element.className = `card${index === 0 ? " is-opening" : ""}`;
+  element.innerHTML = `${index === 0 ? "" : `<span class="card-index">${stepLabel(index)}</span>`}
+    <p class="card-kicker">${step.kicker}</p>
+    <h2>${step.title}</h2>
+    ${step.body.map((paragraph) => `<p>${paragraph}</p>`).join("")}
+    ${step.legend ? legendHTML : ""}
+    ${index === 0 ? `<div class="opening-actions">
+        <button class="begin" type="button"><span class="play-icon" aria-hidden="true"></span>开始播放</button>
+        <button class="browse" type="button">自己浏览 →</button>
+      </div>
+      <p class="hint">滚轮或方向键切换章节 · 拖动地图探索 · 悬停城市查看详情</p>` : ""}`;
+  return element;
 };
 
-const progressFromScroll = () => {
-  const line = window.scrollY + window.innerHeight * (layout.mobile ? 0.62 : 0.5);
-  if (line < sectionTops[0]) return 0;
-  for (let index = 0; index < sections.length; index += 1) {
-    const top = sectionTops[index];
-    const height = sectionHeights[index];
-    if (line < top + height) return index + (line - top) / height;
+const showCard = (index: number, direction: number) => {
+  for (const old of document.querySelectorAll<HTMLElement>(".panel > *, .quote-layer > *")) {
+    if (old.classList.contains("is-leaving")) continue;
+    old.classList.remove("is-active");
+    old.classList.add("is-leaving");
+    old.style.setProperty("--shift", `${-direction * 18}px`);
+    window.setTimeout(() => old.remove(), 500);
   }
-  return steps.length - 0.001;
+  const element = cardElement(index);
+  element.style.setProperty("--shift", `${direction * 22}px`);
+  (steps[index].quote ? quoteLayer : panel).append(element);
+  panel.classList.toggle("is-opening", index === 0);
+  panel.classList.toggle("is-quote", Boolean(steps[index].quote));
+  requestAnimationFrame(() => requestAnimationFrame(() => element.classList.add("is-active")));
+  element.querySelector(".begin")?.addEventListener("click", () => {
+    goTo(1);
+    setPlaying(true);
+  });
+  element.querySelector(".browse")?.addEventListener("click", () => goTo(1));
 };
 
-// ?p=4.5 freezes the story at a progress value, for capture and review; &t= sets the clock.
-const query = new URLSearchParams(window.location.search);
-const frozen = query.get("p");
-const frozenTime = query.get("t");
-let current = frozen === null ? 0 : Number(frozen);
+// ---------- Chapters strip ----------
 
-const reveal = new IntersectionObserver((entries) => {
-  for (const entry of entries) entry.target.classList.toggle("is-visible", entry.isIntersecting);
-}, { threshold: 0.2 });
-for (const section of sections) {
-  if (frozen === null) reveal.observe(section);
-  else section.classList.add("is-visible");
+chapters.innerHTML = steps.map((step, index) =>
+  `<button class="chapter${step.quote ? " is-quote" : ""}" type="button" role="tab" data-step="${index}" aria-label="${stepLabel(index)} ${plainText(stepTitle(index))}"><span class="chapter-tip">${stepLabel(index)} · ${stepTitle(index)}</span></button>`,
+).join("");
+const chapterButtons = [...chapters.querySelectorAll<HTMLButtonElement>(".chapter")];
+chapterButtons.forEach((button, index) => button.addEventListener("click", () => goTo(index)));
+
+// ---------- Story state ----------
+
+const state = {
+  step: 0,
+  previous: undefined as number | undefined,
+  changedAt: 0,
+  stepMs: 1,
+  camera: { path: undefined as ((t: number) => ZoomView) | undefined, start: 0, ms: 1 },
+  explore: undefined as { x: number; y: number; scale: number } | undefined,
+  displayed: { x: 0, y: 0, scale: 1 },
+  playing: false,
+  speed: 1,
+};
+
+const viewFromCamera = ({ x, y, scale }: { x: number; y: number; scale: number }): ZoomView =>
+  [x, y, layout.stage.w / scale];
+
+const moveCamera = (to: ZoomView, now: number) => {
+  const path = interpolateZoom(viewFromCamera(state.displayed), to);
+  state.camera = { path, start: now, ms: clamp(path.duration * 0.85, 800, 2600) };
+  return state.camera.ms;
+};
+
+const frameAt = (now: number): Frame => {
+  const tau = (now - state.changedAt) / 1000;
+  const cameraT = clamp01((now - state.camera.start) / state.camera.ms);
+  const view = state.camera.path && cameraT < 1
+    ? state.camera.path(easeInOut(cameraT))
+    : viewOf(steps[state.step].camera);
+  // A slow push-in while the title holds.
+  const push = state.step === 0 ? 1 + 0.06 * smooth(tau / 12) : 1;
+  const storyCamera = { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
+  const animationStart = (state.stepMs * 0.55) / 1000;
+  const f = clamp01((tau - animationStart) / ANIMATION_SECONDS);
+  return {
+    step: state.step,
+    previous: state.previous,
+    f,
+    P: state.step + f,
+    enter: clamp01((now - state.changedAt) / state.stepMs),
+    leave: clamp01(tau / 0.5),
+    camera: state.explore ?? storyCamera,
+    time: now / 1000,
+  };
+};
+
+const updateChrome = () => {
+  const { step } = state;
+  counter.textContent = `${stepLabel(step)} / ${roman(chapterCount)}`;
+  chapterButtons.forEach((button, index) => {
+    button.classList.toggle("is-current", index === step);
+    button.classList.toggle("is-past", index < step);
+    button.setAttribute("aria-selected", String(index === step));
+  });
+  document.querySelector<HTMLButtonElement>(".prev")!.disabled = step === 0;
+  document.querySelector<HTMLButtonElement>(".next")!.disabled = step === steps.length - 1;
+};
+
+function goTo(target: number) {
+  const index = clamp(target, 0, steps.length - 1);
+  if (index === state.step) {
+    if (state.explore) returnToStory();
+    return;
+  }
+  const now = performance.now();
+  const direction = Math.sign(index - state.step);
+  state.stepMs = moveCamera(viewOf(steps[index].camera), now);
+  state.previous = state.step;
+  state.step = index;
+  state.changedAt = now;
+  state.explore = undefined;
+  recenter.hidden = true;
+  closeTooltip();
+  showCard(index, direction);
+  updateChrome();
+  history.replaceState(null, "", `#${steps[index].id}`);
 }
 
+function returnToStory() {
+  moveCamera(viewOf(steps[state.step].camera), performance.now());
+  state.explore = undefined;
+  recenter.hidden = true;
+}
+
+// ---------- Autoplay ----------
+
+const speeds = [0.75, 1, 1.5, 2];
+
+function setPlaying(value: boolean) {
+  state.playing = value && state.step < steps.length - 1;
+  playButton.setAttribute("aria-pressed", String(state.playing));
+  playButton.setAttribute("aria-label", state.playing ? "暂停" : "自动播放");
+  document.body.classList.toggle("is-playing", state.playing);
+  if (state.playing && state.explore) returnToStory();
+}
+
+const holdSeconds = (index: number) => {
+  const animationStart = (state.stepMs * 0.55) / 1000;
+  return Math.max(animationStart + ANIMATION_SECONDS + 0.8, animationStart + readingSeconds(index) / state.speed);
+};
+
+const tickAutoplay = (now: number) => {
+  const elapsed = (now - state.changedAt) / 1000;
+  const total = holdSeconds(state.step);
+  progressBar.style.transform = `scaleX(${state.playing ? clamp01(elapsed / total).toFixed(4) : 0})`;
+  if (!state.playing || elapsed < total) return;
+  if (state.step >= steps.length - 1) setPlaying(false);
+  else goTo(state.step + 1);
+};
+
+playButton.addEventListener("click", () => setPlaying(!state.playing));
+speedButton.addEventListener("click", () => {
+  state.speed = speeds[(speeds.indexOf(state.speed) + 1) % speeds.length];
+  speedButton.textContent = `${state.speed}×`;
+});
+document.querySelector(".prev")!.addEventListener("click", () => goTo(state.step - 1));
+document.querySelector(".next")!.addEventListener("click", () => goTo(state.step + 1));
+
+// ---------- Exploring the map ----------
+
+const stageCenter = () => [layout.stage.x + layout.stage.w / 2, layout.stage.y + layout.stage.h / 2];
+
+const explore = (camera: { x: number; y: number; scale: number }) => {
+  state.explore = {
+    ...camera,
+    scale: clamp(camera.scale, layout.fit * 0.8, layout.fit * 60),
+  };
+  state.camera.path = undefined;
+  recenter.hidden = false;
+  if (state.playing) setPlaying(false);
+};
+
+// Zoom about a screen point, keeping the world point under it fixed.
+const zoomAt = (x: number, y: number, factor: number) => {
+  const camera = state.explore ?? state.displayed;
+  const [cx, cy] = stageCenter();
+  const scale = clamp(camera.scale * factor, layout.fit * 0.8, layout.fit * 60);
+  const wx = camera.x + (x - cx) / camera.scale;
+  const wy = camera.y + (y - cy) / camera.scale;
+  explore({ x: wx - (x - cx) / scale, y: wy - (y - cy) / scale, scale });
+};
+
+const pointers = new Map<number, XY>();
+let drag: { start: XY; camera: { x: number; y: number; scale: number }; moved: boolean } | undefined;
+let pinch: { distance: number; mid: XY; camera: { x: number; y: number; scale: number } } | undefined;
+
+svg.addEventListener("pointerdown", (event) => {
+  svg.setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, [event.clientX, event.clientY]);
+  if (pointers.size === 1) {
+    drag = { start: [event.clientX, event.clientY], camera: { ...state.displayed }, moved: false };
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinch = {
+      distance: Math.hypot(b[0] - a[0], b[1] - a[1]),
+      mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+      camera: { ...state.displayed },
+    };
+    drag = undefined;
+  }
+});
+
+svg.addEventListener("pointermove", (event) => {
+  if (pointers.has(event.pointerId)) {
+    pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    if (pinch && pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const ratio = Math.hypot(b[0] - a[0], b[1] - a[1]) / pinch.distance;
+      const [cx, cy] = stageCenter();
+      const { camera, mid } = pinch;
+      const scale = camera.scale * ratio;
+      const wx = camera.x + (mid[0] - cx) / camera.scale;
+      const wy = camera.y + (mid[1] - cy) / camera.scale;
+      explore({ x: wx - (mid[0] - cx) / scale, y: wy - (mid[1] - cy) / scale, scale });
+    } else if (drag) {
+      const dx = event.clientX - drag.start[0];
+      const dy = event.clientY - drag.start[1];
+      if (!drag.moved && Math.hypot(dx, dy) > 5) {
+        drag.moved = true;
+        svg.classList.add("is-dragging");
+      }
+      if (drag.moved) explore({ ...drag.camera, x: drag.camera.x - dx / drag.camera.scale, y: drag.camera.y - dy / drag.camera.scale });
+    }
+    return;
+  }
+  if (event.pointerType === "mouse" && !pinned) {
+    const hit = hitTest(event.clientX, event.clientY, 14);
+    if (hit) showTooltip(hit, false);
+    else closeTooltip();
+  }
+});
+
+const endPointer = (event: PointerEvent) => {
+  const wasTap = drag && !drag.moved && pointers.size === 1;
+  pointers.delete(event.pointerId);
+  if (pointers.size < 2) pinch = undefined;
+  if (pointers.size === 0) {
+    svg.classList.remove("is-dragging");
+    if (wasTap) {
+      const hit = hitTest(event.clientX, event.clientY, event.pointerType === "mouse" ? 14 : 24);
+      if (hit) showTooltip(hit, true);
+      else closeTooltip(true);
+    }
+    drag = undefined;
+  }
+};
+svg.addEventListener("pointerup", endPointer);
+svg.addEventListener("pointercancel", endPointer);
+svg.addEventListener("pointerleave", () => {
+  if (!pinned && pointers.size === 0) closeTooltip();
+});
+svg.addEventListener("dblclick", (event) => zoomAt(event.clientX, event.clientY, 1.8));
+
+const [zoomIn, zoomOut] = [".zoom-in", ".zoom-out"].map((selector) => document.querySelector<HTMLButtonElement>(selector)!);
+zoomIn.addEventListener("click", () => zoomAt(...(stageCenter() as XY), 1.5));
+zoomOut.addEventListener("click", () => zoomAt(...(stageCenter() as XY), 1 / 1.5));
+recenter.addEventListener("click", returnToStory);
+
+// ---------- Place tooltips ----------
+
+let pinned: PlaceId | undefined;
+
+const hitTest = (x: number, y: number, radius: number) => {
+  let best: PlaceId | undefined;
+  let bestDistance = radius;
+  for (const node of placeNodes) {
+    if (node.visible < 0.35) continue;
+    const distance = Math.hypot(node.screen[0] - x, node.screen[1] - y);
+    if (distance < bestDistance) {
+      best = node.id;
+      bestDistance = distance;
+    }
+  }
+  return best;
+};
+
+// Steps a place takes part in, for the tooltip's jump links.
+const appearances = new Map<PlaceId, number[]>();
+steps.forEach((step, index) => {
+  if (index === 0 || step.quote) return;
+  const ids = new Set<PlaceId>(step.labels ?? []);
+  for (const mark of step.marks ?? []) {
+    if ("place" in mark) ids.add(mark.place);
+    if ("via" in mark) for (const point of mark.via) if (typeof point === "string") ids.add(point);
+  }
+  for (const id of ids) appearances.set(id, [...(appearances.get(id) ?? []), index]);
+});
+
+const sideLabel: Record<Side | "ruined", string> = {
+  athens: "雅典一方",
+  sparta: "斯巴达一方",
+  neutral: "中立",
+  persia: "波斯",
+  ruined: "已被毁",
+};
+
+const showTooltip = (id: PlaceId, pin: boolean) => {
+  const node = placeNodes.find((candidate) => candidate.id === id)!;
+  const place = places[id];
+  const note = placeNotes[id];
+  const side = node.side;
+  const links = (appearances.get(id) ?? []).filter((index) => index !== state.step).slice(0, 6);
+  if (hovered !== id || pin !== Boolean(pinned)) {
+    tooltip.innerHTML = `<div class="tip-name">${place.name}<span>${place.en}</span></div>
+      ${side ? `<div class="tip-side" style="--side: var(--${side === "ruined" ? "ruined" : side})">${sideLabel[side]} · 公元前 ${steps[state.step].year} 年</div>` : ""}
+      ${note ? `<p class="tip-note">${note.note}${note.cite ? `<cite>${note.cite}</cite>` : ""}</p>` : ""}
+      ${links.length ? `<div class="tip-links"><span>相关章节</span>${links.map((index) =>
+        `<button type="button" data-step="${index}">${stepLabel(index)} ${steps[index].title}</button>`).join("")}</div>` : ""}`;
+    tooltip.querySelectorAll<HTMLButtonElement>("[data-step]").forEach((button) =>
+      button.addEventListener("click", () => goTo(Number(button.dataset.step))));
+  }
+  hovered = id;
+  pinned = pin ? id : undefined;
+  tooltip.classList.toggle("is-pinned", pin);
+  tooltip.hidden = false;
+  if (pin && state.playing) setPlaying(false);
+  // Sit beside the city, flipped to stay on screen.
+  const [x, y] = node.screen;
+  const width = tooltip.offsetWidth;
+  const height = tooltip.offsetHeight;
+  const left = x + 18 + width > window.innerWidth - 12 ? x - 18 - width : x + 18;
+  const top = clamp(y - height / 2, 12, window.innerHeight - height - 12);
+  tooltip.style.left = `${Math.max(12, left)}px`;
+  tooltip.style.top = `${top}px`;
+};
+
+function closeTooltip(force = false) {
+  if (pinned && !force) return;
+  pinned = undefined;
+  hovered = undefined;
+  tooltip.hidden = true;
+}
+
+// ---------- Wheel, keys, swipes ----------
+
+const canScroll = (element: Element, deltaY: number) =>
+  element.scrollHeight > element.clientHeight + 1
+  && (deltaY > 0
+    ? element.scrollTop + element.clientHeight < element.scrollHeight - 1
+    : element.scrollTop > 0);
+
+let wheelIntent = 0;
+let wheelDirection = 0;
+let wheelCommitted = 0;
+let wheelQuiet: number | undefined;
+let lastWheelStep = 0;
+
+window.addEventListener("wheel", (event) => {
+  if (!sources.hidden) return;
+  if (event.ctrlKey) {
+    event.preventDefault();
+    zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.01));
+    return;
+  }
+  const scroller = (event.target as Element).closest?.(".card, .tooltip");
+  if (scroller && canScroll(scroller, event.deltaY)) return;
+  event.preventDefault();
+  const delta = event.deltaY * (event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? window.innerHeight : 1);
+  const direction = Math.sign(delta);
+  if (direction === 0) return;
+  // One gesture moves one step: build intent, then swallow the momentum tail.
+  window.clearTimeout(wheelQuiet);
+  wheelQuiet = window.setTimeout(() => {
+    wheelCommitted = 0;
+    wheelIntent = 0;
+  }, 220);
+  if (wheelCommitted === direction) return;
+  if (direction !== wheelDirection) wheelIntent = 0;
+  wheelDirection = direction;
+  wheelIntent += Math.min(Math.abs(delta), 120);
+  if (wheelIntent >= 80 && performance.now() - lastWheelStep > 450) {
+    wheelCommitted = direction;
+    wheelIntent = 0;
+    lastWheelStep = performance.now();
+    goTo(state.step + direction);
+  }
+}, { passive: false });
+
+window.addEventListener("keydown", (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!sources.hidden) {
+    if (event.key === "Escape") toggleSources(false);
+    return;
+  }
+  const forward = ["ArrowRight", "ArrowDown", "PageDown"];
+  const backward = ["ArrowLeft", "ArrowUp", "PageUp"];
+  if (forward.includes(event.key)) goTo(state.step + 1);
+  else if (backward.includes(event.key)) goTo(state.step - 1);
+  else if (event.key === " " && !(event.target instanceof HTMLButtonElement)) setPlaying(!state.playing);
+  else if (event.key === "Home") goTo(0);
+  else if (event.key === "End") goTo(steps.length - 1);
+  else if (event.key === "Escape") closeTooltip(true);
+  else return;
+  event.preventDefault();
+});
+
+// Horizontal swipes on the story panel turn the page; vertical ones scroll the card.
+let swipe: XY | undefined;
+for (const surface of [panel, quoteLayer]) {
+  surface.addEventListener("touchstart", (event) => {
+    swipe = [event.touches[0].clientX, event.touches[0].clientY];
+  }, { passive: true });
+  surface.addEventListener("touchend", (event) => {
+    if (!swipe) return;
+    const dx = event.changedTouches[0].clientX - swipe[0];
+    const dy = event.changedTouches[0].clientY - swipe[1];
+    swipe = undefined;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) goTo(state.step + (dx < 0 ? 1 : -1));
+  }, { passive: true });
+}
+
+// ---------- Sources drawer ----------
+
+const sources = document.querySelector<HTMLElement>(".sources")!;
+function toggleSources(open: boolean) {
+  sources.hidden = !open;
+  if (open && state.playing) setPlaying(false);
+}
+document.querySelector(".sources-open")!.addEventListener("click", () => toggleSources(true));
+document.querySelector(".sources-close")!.addEventListener("click", () => toggleSources(false));
+sources.addEventListener("click", (event) => {
+  if (event.target === sources) toggleSources(false);
+});
+
+// ---------- Start ----------
+
+// ?step=12&t=3 (or the older ?p=12.4) freezes a frame for capture and review.
+const query = new URLSearchParams(window.location.search);
+const legacy = query.get("p");
+const frozenStep = query.get("step") ?? (legacy === null ? null : String(Math.floor(Number(legacy))));
+const frozenSeconds = query.get("t") !== null && legacy === null
+  ? Number(query.get("t"))
+  : legacy === null ? 30 : 1.2 + (Number(legacy) % 1) * ANIMATION_SECONDS;
+let frozen: number | undefined = frozenStep === null ? undefined : clamp(Number(frozenStep), 0, steps.length - 1);
+
+const hashStep = steps.findIndex((step) => `#${step.id}` === window.location.hash);
+const initial = frozen ?? (hashStep > 0 ? hashStep : 0);
+state.step = initial;
+state.changedAt = performance.now() - (frozen === undefined ? 0 : frozenSeconds * 1000);
+
 const loop = (now: number) => {
-  if (frozen === null) current = progressFromScroll();
-  const time = frozenTime === null ? now / 1000 : Number(frozenTime);
-  render(clamp(current, 0, steps.length - 0.001), time);
+  const frame = frameAt(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
+  state.displayed = frame.camera;
+  render(frame);
+  tickAutoplay(now);
+  if (pinned || (hovered && !tooltip.hidden)) {
+    // Keep the tooltip attached while the camera moves.
+    const node = placeNodes.find((candidate) => candidate.id === (pinned ?? hovered));
+    if (node && node.visible < 0.2) closeTooltip(true);
+  }
   requestAnimationFrame(loop);
 };
 
-const relayout = () => {
-  measure();
-  measureSections();
-  buildCameraPaths();
-};
+const relayout = () => measure();
 
 const applyScheme = () => {
   readColors();
@@ -1180,6 +1612,8 @@ const applyScheme = () => {
 applyScheme();
 paintGrain();
 relayout();
+showCard(initial, 0);
+updateChrome();
 requestAnimationFrame(loop);
 window.addEventListener("resize", relayout);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyScheme);
@@ -1187,46 +1621,14 @@ document.fonts?.ready.then(relayout);
 
 (window as typeof window & { __atlas?: unknown }).__atlas = {
   steps: steps.length,
-  render: (P: number, time = 0) => {
-    current = P;
-    render(P, time);
+  goTo,
+  // Freeze on a step at a time since entering it, for capture.
+  freeze: (step: number, seconds: number) => {
+    frozen = step;
+    state.previous = undefined;
+    state.step = step;
+    state.changedAt = performance.now() - seconds * 1000;
+    showCard(step, 0);
+    updateChrome();
   },
 };
-
-// ---------- Play ----------
-
-let playing = false;
-let lastTime = 0;
-
-const setPlaying = (value: boolean) => {
-  playing = value;
-  playButton.setAttribute("aria-pressed", String(value));
-  playButton.querySelector(".play-label")!.textContent = value ? "暂停" : "自动播放";
-  if (value) {
-    lastTime = performance.now();
-    requestAnimationFrame(tick);
-  }
-};
-
-// About seven seconds a step, lingering while a card is centred; quotes hold a little longer.
-const tick = (time: number) => {
-  if (!playing) return;
-  const dt = Math.min((time - lastTime) / 1000, 0.05);
-  lastTime = time;
-  const index = Math.min(Math.floor(current), steps.length - 1);
-  const height = sectionHeights[index] ?? window.innerHeight;
-  const f = current - index;
-  const hold = steps[index].quote ? 0.6 : 0.75;
-  const pace = f > 0.2 && f < 0.6 ? hold : 1.15;
-  window.scrollBy(0, (height / 6.5) * pace * dt);
-  if (current >= steps.length - 0.02) {
-    setPlaying(false);
-    return;
-  }
-  requestAnimationFrame(tick);
-};
-
-playButton.addEventListener("click", () => setPlaying(!playing));
-for (const type of ["wheel", "touchstart", "keydown"] as const) {
-  window.addEventListener(type, () => playing && setPlaying(false), { passive: true });
-}
