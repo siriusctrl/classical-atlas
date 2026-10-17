@@ -245,3 +245,16 @@
 ### 资料来源
 - 原典英译：Perseus Digital Library（Thucydides, Crawley 译，`1999.01.0200`；Xenophon *Hellenica*, Brownson 译，`1999.01.0206`；Herodotus, Godley 译，`1999.01.0126`）；Plutarch *Nicias*、*Lysander*，Perrin 译（penelope.uchicago.edu/Thayer）。
 - 现代研究：P. Garnsey, *Famine and Food Supply in the Graeco-Roman World*（1988）；A. Moreno, *Feeding the Democracy*（2007）；A. Keen, "Grain for Athens"（*Electronic Antiquity* 1.6）；L. Kallet-Marx（1993）；J. S. Morrison, J. F. Coates & N. B. Rankov, *The Athenian Trireme*（第 2 版，2000）；S. Rangos, *Cromohs*（2020）；B. Strauss, "Aegospotami Reexamined"（AJP 104，1983）；W. Scheidel, "Helot Numbers"（2003）；Olympias（Wikipedia / Trireme Trust）。
+
+---
+
+## 16. 导览细节点（beats）
+
+`src/story.ts` 中各章节的 `beats` 共 45 条，于 2026-10-17 分两轮逐条对照 Perseus TEI（Crawley、Brownson 英译与希腊文原文；《蛙》《雅典政制》对照希腊文）核过，出处标在每条文字里。几处要点：
+- 墨托涅是布拉西达斯在本战中第一次受到斯巴达嘉奖（2.25.1–2）；菲亚是美塞尼亚人从陆上攻下的，不是舰队（2.25.3–5）。
+- 塞杰斯塔借来的金银杯是摆给雅典水手看的，使者看到的是埃律克斯神庙的财宝（6.46.1–4）。
+- 卡塔那：士兵破开一道没堵严的小门进城，当时亚西比德正在公民大会上讲话（6.51.1–2）。
+- 2.48.2 的“投毒”说的是蓄水井；2.51.6 只说幸存者最同情病人，没有说他们照顾病人。
+- 斯法克特里亚：潜水送粮的人原文没有说是黑劳士（4.26.8）；黑劳士是被许诺自由去夜里驾船运粮（4.26.5–7）。
+- 修昔底德没有写“斯巴达人没有来救米洛斯”，这是从沉默推出的结论，不要当作原文。
+- 《蛙》693–694 说奴隶“成了普拉提亚人”，通常解读为获得公民权。
