@@ -1318,6 +1318,96 @@ body {
   pointer-events: none;
 }
 
+/* ---------- Beats ---------- */
+
+.beat-pin {
+  cursor: pointer;
+}
+
+.beat-pin circle {
+  fill: var(--paper-solid);
+  stroke: var(--ink);
+  stroke-width: 1.4;
+}
+
+.beat-pin text {
+  fill: var(--ink);
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.beat-pin.is-active circle {
+  fill: var(--ink);
+}
+
+.beat-pin.is-active text {
+  fill: var(--paper-solid);
+}
+
+.callout-leader {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.callout {
+  position: fixed;
+  z-index: 4;
+  width: 280px;
+  padding: 14px 16px 13px;
+  background: var(--paper-solid);
+  border: 1px solid var(--paper-line);
+  border-left: 3px solid var(--sparta);
+  border-radius: 3px;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 14%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.callout-index {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  color: var(--faint);
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.callout h3 {
+  margin: 0 0 6px;
+  padding-right: 20px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.callout p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+}
+
+.callout cite {
+  margin-left: 2px;
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.callout cite::before {
+  content: "〔";
+}
+
+.callout cite::after {
+  content: "〕";
+}
+
 /* ---------- Sources drawer ---------- */
 
 .sources {
@@ -1536,6 +1626,10 @@ body {
 
   .tooltip {
     width: min(300px, calc(100vw - 24px));
+  }
+
+  .callout {
+    width: min(260px, calc(100vw - 24px));
   }
 
   .sources-sheet {

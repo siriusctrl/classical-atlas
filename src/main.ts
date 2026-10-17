@@ -16,6 +16,7 @@ import {
   seas,
   steps,
   type Camera,
+  type Beat,
   type Inset,
   type MapText,
   type Mark,
@@ -100,6 +101,7 @@ const counter = document.querySelector<HTMLElement>(".counter")!;
 const progressBar = document.querySelector<HTMLElement>(".autoplay-progress span")!;
 const chapters = document.querySelector<HTMLElement>(".chapters")!;
 const tooltip = document.querySelector<HTMLElement>(".tooltip")!;
+const callout = document.querySelector<HTMLElement>(".callout")!;
 const recenter = document.querySelector<HTMLButtonElement>(".recenter")!;
 const series = document.querySelector<HTMLElement>(".masthead-series")!;
 
@@ -178,6 +180,7 @@ const wallLayer = svgElement("g", {}, svg);
 const markLayer = svgElement("g", {}, svg);
 const placeLayer = svgElement("g", {}, svg);
 const effectLayer = svgElement("g", {}, svg);
+const beatLayer = svgElement("g", {}, svg);
 
 // ---------- Projection helpers per frame ----------
 
@@ -997,7 +1000,7 @@ const buildTalent = () => {
   };
 };
 
-const renderInset = ({ step: index, f, enter, time }: Frame) => {
+const renderInset = ({ step: index, f, enter, time, touring }: Frame) => {
   const list = insetsOf(index);
   const startOf = (k: number) => list[k]?.at?.[0] ?? 0.1;
   let active = 0;
@@ -1017,7 +1020,7 @@ const renderInset = ({ step: index, f, enter, time }: Frame) => {
   const next = active + 1 < list.length ? startOf(active + 1) : 2;
   const appear = smooth(within(f, [start, start + 0.07]));
   const leave = smooth(within(f, [next - 0.08, next - 0.015]));
-  insetElement.style.opacity = String(appear * (1 - leave) * smooth(enter * 2));
+  insetElement.style.opacity = String(appear * (1 - leave) * smooth(enter * 2) * (1 - touring));
   insetElement.style.transform = `translateY(${fixed((1 - appear) * 14)}px)`;
   insetUpdate(within(f, [start, end]), time);
 };
@@ -1037,6 +1040,11 @@ type Frame = {
   leave: number;
   camera: { x: number; y: number; scale: number };
   time: number;
+  // The beat whose callout is showing, and how far it has faded in.
+  beat: number | undefined;
+  beatAppear: number;
+  // 1 while the camera is away on a beat; insets step aside for the callouts.
+  touring: number;
 };
 
 let lastFilter = "";
@@ -1089,6 +1097,67 @@ const render = (frame: Frame) => {
   renderPlaces(frame, clamp01(dimmed));
   renderYear(frame);
   renderInset(frame);
+  renderBeats(frame, clamp01(dimmed));
+};
+
+// ---------- Beats: pins and callouts ----------
+
+const beatNodes = steps.map((step) => (step.beats ?? []).map((beat, index) => {
+  const group = svgElement("g", { class: "beat-pin", display: "none" }, beatLayer);
+  svgElement("circle", { r: 10 }, group);
+  const number = svgElement("text", { "text-anchor": "middle", y: 4.2 }, group);
+  number.textContent = String(index + 1);
+  return { beat, group, world: toWorld(beat.at), screen: [0, 0] as XY, visible: 0 };
+}));
+const leader = svgElement("path", { class: "callout-leader" }, beatLayer);
+let calloutKey = "";
+
+const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
+  const pins = smooth((f - 0.8) / 0.15) * (1 - dimmed);
+  beatNodes.forEach((nodes, index) => {
+    for (const [order, node] of nodes.entries()) {
+      const current = index === step && pins > 0;
+      set(node.group, "display", current ? "inline" : "none");
+      node.visible = current ? pins : 0;
+      if (!current) continue;
+      const [x, y] = screen(node.world);
+      node.screen = [x, y];
+      set(node.group, "transform", `translate(${fixed(x)},${fixed(y)}) scale(${(0.6 + 0.4 * backOut(pins)).toFixed(3)})`);
+      set(node.group, "opacity", pins.toFixed(3));
+      set(node.group, "class", `beat-pin${order === beat ? " is-active" : ""}`);
+    }
+  });
+
+  const node = beat === undefined ? undefined : beatNodes[step][beat];
+  if (!node || beatAppear <= 0.01) {
+    callout.style.opacity = "0";
+    set(leader, "opacity", "0");
+    return;
+  }
+  const key = `${step}:${beat}`;
+  if (key !== calloutKey) {
+    calloutKey = key;
+    callout.innerHTML = `<div class="callout-index">${beat! + 1}</div><h3>${node.beat.title}</h3><p>${node.beat.text}</p>`;
+  }
+  // Beside the pin, away from the story card, kept on screen.
+  const [x, y] = node.screen;
+  const width = callout.offsetWidth;
+  const height = callout.offsetHeight;
+  let left = x + 34;
+  if (left + width > window.innerWidth - 16) left = x - 34 - width;
+  if (!layout.mobile && left < layout.stage.x) left = Math.min(x + 34, window.innerWidth - width - 16);
+  let top = y - height - 26;
+  if (top < 72) top = y + 26;
+  top = clamp(top, 72, window.innerHeight - height - 90);
+  left = clamp(left, 12, window.innerWidth - width - 12);
+  callout.style.left = `${left.toFixed(1)}px`;
+  callout.style.top = `${top.toFixed(1)}px`;
+  callout.style.opacity = beatAppear.toFixed(3);
+  callout.style.transform = `translateY(${((1 - beatAppear) * 8).toFixed(1)}px)`;
+  const ex = clamp(x, left, left + width);
+  const ey = clamp(y, top, top + height);
+  set(leader, "d", `M${fixed(x)},${fixed(y)}L${fixed(ex)},${fixed(ey)}`);
+  set(leader, "opacity", (beatAppear * 0.8).toFixed(3));
 };
 
 // ---------- Story text ----------
@@ -1199,6 +1268,48 @@ const state = {
   displayed: { x: 0, y: 0, scale: 1 },
   playing: false,
   speed: 1,
+  // The guided tour runs while autoplay is on: base is when it starts (seconds into the
+  // step) and from is where its first flight begins.
+  tour: { on: false, base: 0, from: undefined as ZoomView | undefined },
+  // A camera target that replaces the step's own view, e.g. a beat the reader clicked.
+  target: undefined as ZoomView | undefined,
+  focusBeat: undefined as number | undefined,
+  hoverBeat: undefined as number | undefined,
+};
+
+const FLY_SECONDS = 1.4;
+
+const beatView = (index: number, beat: Beat): ZoomView => {
+  const [x, y] = toWorld(beat.at);
+  const zoom = beat.zoom ?? steps[index].camera.zoom * 2;
+  return [x, y, layout.stage.w / (layout.fit * zoom)];
+};
+
+const beatHold = (beat: Beat) => (2.4 + plainText(beat.text).length / 9) / state.speed;
+
+type Segment = { path: (t: number) => ZoomView; start: number; end: number; beat?: number };
+let planKey = "";
+let plan: Segment[] = [];
+
+// The tour as a timeline: fly to each beat, hold while it reads, then fly home.
+const tourPlan = (index: number) => {
+  const key = `${index}:${state.tour.base}:${state.speed}:${state.tour.from?.join(",")}:${layout.width}x${layout.height}`;
+  if (key === planKey) return plan;
+  planKey = key;
+  plan = [];
+  const beats = steps[index].beats ?? [];
+  if (beats.length === 0) return plan;
+  let at = state.tour.base;
+  let from = state.tour.from ?? viewOf(steps[index].camera);
+  beats.forEach((beat, order) => {
+    const to = beatView(index, beat);
+    const end = at + FLY_SECONDS + beatHold(beat);
+    plan.push({ path: interpolateZoom(from, to), start: at, end, beat: order });
+    at = end;
+    from = to;
+  });
+  plan.push({ path: interpolateZoom(from, viewOf(steps[index].camera)), start: at, end: at + FLY_SECONDS });
+  return plan;
 };
 
 const viewFromCamera = ({ x, y, scale }: { x: number; y: number; scale: number }): ZoomView =>
@@ -1213,9 +1324,30 @@ const moveCamera = (to: ZoomView, now: number) => {
 const frameAt = (now: number): Frame => {
   const tau = (now - state.changedAt) / 1000;
   const cameraT = clamp01((now - state.camera.start) / state.camera.ms);
-  const view = state.camera.path && cameraT < 1
+  let view = state.camera.path && cameraT < 1
     ? state.camera.path(easeInOut(cameraT))
-    : viewOf(steps[state.step].camera);
+    : state.target ?? viewOf(steps[state.step].camera);
+  let beat = state.focusBeat ?? state.hoverBeat;
+  let beatAppear = beat === undefined ? 0 : 1;
+  let touring = state.focusBeat === undefined ? 0 : 1;
+  if (state.tour.on && !state.explore) {
+    const segments = tourPlan(state.step);
+    if (segments.length) {
+      const first = segments[0].start;
+      const last = segments[segments.length - 1].end;
+      touring = smooth((tau - first) / 0.5) * (1 - smooth((tau - last + 0.8) / 0.8));
+    }
+    for (const segment of segments) {
+      if (tau < segment.start || tau >= segment.end) continue;
+      view = segment.path(easeInOut(clamp01((tau - segment.start) / FLY_SECONDS)));
+      if (segment.beat !== undefined) {
+        beat = segment.beat;
+        beatAppear = smooth((tau - segment.start - FLY_SECONDS * 0.75) / 0.45)
+          * (1 - smooth((tau - segment.end + 0.4) / 0.4));
+      }
+      break;
+    }
+  }
   // A slow push-in while the title holds.
   const push = state.step === 0 ? 1 + 0.06 * smooth(tau / 12) : 1;
   const storyCamera = { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
@@ -1230,6 +1362,9 @@ const frameAt = (now: number): Frame => {
     leave: clamp01(tau / 0.5),
     camera: state.explore ?? storyCamera,
     time: now / 1000,
+    beat,
+    beatAppear,
+    touring,
   };
 };
 
@@ -1258,8 +1393,13 @@ function goTo(target: number) {
   state.step = index;
   state.changedAt = now;
   state.explore = undefined;
+  state.target = undefined;
+  state.focusBeat = undefined;
+  state.hoverBeat = undefined;
+  state.tour.base = (state.stepMs * 0.55) / 1000 + ANIMATION_SECONDS * 0.92;
+  state.tour.from = undefined;
   recenter.hidden = true;
-  closeTooltip();
+  closeTooltip(true);
   showCard(index, direction);
   updateChrome();
   history.replaceState(null, "", `#${steps[index].id}`);
@@ -1268,7 +1408,20 @@ function goTo(target: number) {
 function returnToStory() {
   moveCamera(viewOf(steps[state.step].camera), performance.now());
   state.explore = undefined;
+  state.target = undefined;
+  state.focusBeat = undefined;
   recenter.hidden = true;
+}
+
+// Fly to a beat and hold its callout open, as if the tour had stopped there.
+function focusBeat(order: number) {
+  if (state.playing) setPlaying(false);
+  const view = beatView(state.step, steps[state.step].beats![order]);
+  moveCamera(view, performance.now());
+  state.explore = undefined;
+  state.target = view;
+  state.focusBeat = order;
+  recenter.hidden = false;
 }
 
 // ---------- Autoplay ----------
@@ -1276,16 +1429,43 @@ function returnToStory() {
 const speeds = [0.75, 1, 1.5, 2];
 
 function setPlaying(value: boolean) {
+  const tau = (performance.now() - state.changedAt) / 1000;
+  if (!value && state.tour.on) {
+    // Pausing mid-tour leaves the camera and callout where they are.
+    const active = frameAt(performance.now());
+    const home = viewOf(steps[state.step].camera);
+    if (Math.abs(active.camera.x - home[0]) > 1 || Math.abs(active.camera.scale - layout.stage.w / home[2]) > 0.01) {
+      state.explore = { ...state.displayed };
+      recenter.hidden = false;
+    }
+    state.focusBeat = active.beat;
+  }
+  if (value) {
+    state.target = undefined;
+    state.focusBeat = undefined;
+    if (tau > state.tour.base - 0.1 || state.explore) {
+      // Resuming mid-step: start the tour from wherever the camera is now.
+      state.tour.base = tau + 0.2;
+      state.tour.from = viewFromCamera(state.displayed);
+      state.explore = undefined;
+      recenter.hidden = true;
+    }
+  }
+  state.tour.on = value;
   state.playing = value && state.step < steps.length - 1;
   playButton.setAttribute("aria-pressed", String(state.playing));
   playButton.setAttribute("aria-label", state.playing ? "暂停" : "自动播放");
   document.body.classList.toggle("is-playing", state.playing);
-  if (state.playing && state.explore) returnToStory();
 }
 
 const holdSeconds = (index: number) => {
   const animationStart = (state.stepMs * 0.55) / 1000;
-  return Math.max(animationStart + ANIMATION_SECONDS + 0.8, animationStart + readingSeconds(index) / state.speed);
+  const tour = tourPlan(index);
+  return Math.max(
+    animationStart + ANIMATION_SECONDS + 0.8,
+    animationStart + readingSeconds(index) / state.speed,
+    tour.length ? tour[tour.length - 1].end + 0.6 : 0,
+  );
 };
 
 const tickAutoplay = (now: number) => {
@@ -1373,6 +1553,12 @@ svg.addEventListener("pointermove", (event) => {
     return;
   }
   if (event.pointerType === "mouse" && !pinned) {
+    const pin = beatHit(event.clientX, event.clientY);
+    state.hoverBeat = pin;
+    if (pin !== undefined) {
+      closeTooltip();
+      return;
+    }
     const hit = hitTest(event.clientX, event.clientY, 14);
     if (hit) showTooltip(hit, false);
     else closeTooltip();
@@ -1386,6 +1572,14 @@ const endPointer = (event: PointerEvent) => {
   if (pointers.size === 0) {
     svg.classList.remove("is-dragging");
     if (wasTap) {
+      const pin = beatHit(event.clientX, event.clientY, event.pointerType === "mouse" ? 14 : 22);
+      if (pin !== undefined) {
+        closeTooltip(true);
+        focusBeat(pin);
+        drag = undefined;
+        return;
+      }
+      if (state.focusBeat !== undefined && !state.playing) state.focusBeat = undefined;
       const hit = hitTest(event.clientX, event.clientY, event.pointerType === "mouse" ? 14 : 24);
       if (hit) showTooltip(hit, true);
       else closeTooltip(true);
@@ -1396,6 +1590,7 @@ const endPointer = (event: PointerEvent) => {
 svg.addEventListener("pointerup", endPointer);
 svg.addEventListener("pointercancel", endPointer);
 svg.addEventListener("pointerleave", () => {
+  state.hoverBeat = undefined;
   if (!pinned && pointers.size === 0) closeTooltip();
 });
 svg.addEventListener("dblclick", (event) => zoomAt(event.clientX, event.clientY, 1.8));
@@ -1408,6 +1603,21 @@ recenter.addEventListener("click", returnToStory);
 // ---------- Place tooltips ----------
 
 let pinned: PlaceId | undefined;
+
+const beatHit = (x: number, y: number, radius = 14) => {
+  const nodes = beatNodes[state.step] ?? [];
+  let best: number | undefined;
+  let bestDistance = radius;
+  nodes.forEach((node, order) => {
+    if (node.visible < 0.5) return;
+    const distance = Math.hypot(node.screen[0] - x, node.screen[1] - y);
+    if (distance < bestDistance) {
+      best = order;
+      bestDistance = distance;
+    }
+  });
+  return best;
+};
 
 const hitTest = (x: number, y: number, radius: number) => {
   let best: PlaceId | undefined;
@@ -1581,6 +1791,8 @@ const frozenSeconds = query.get("t") !== null && legacy === null
   ? Number(query.get("t"))
   : legacy === null ? 30 : 1.2 + (Number(legacy) % 1) * ANIMATION_SECONDS;
 let frozen: number | undefined = frozenStep === null ? undefined : clamp(Number(frozenStep), 0, steps.length - 1);
+// &tour=1 renders the autoplay camera tour, as a video export would.
+if (query.get("tour") === "1") state.tour = { on: true, base: 0.55 + ANIMATION_SECONDS * 0.92, from: undefined };
 
 const hashStep = steps.findIndex((step) => `#${step.id}` === window.location.hash);
 const initial = frozen ?? (hashStep > 0 ? hashStep : 0);

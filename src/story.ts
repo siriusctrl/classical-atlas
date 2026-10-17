@@ -64,8 +64,19 @@ export type Step = {
   marks?: Mark[];
   // Several insets play in sequence, each from its own start.
   inset?: Inset | Inset[];
+  // Details along the way: pins in free reading, a guided camera tour in autoplay.
+  beats?: Beat[];
   // A full-screen typographic moment; the map holds the previous camera and dims.
   quote?: { text: string; cite: string; note?: string };
+};
+
+export type Beat = {
+  at: Point;
+  title: string;
+  text: string;
+  cite?: string;
+  // Camera zoom while the tour holds on this beat; defaults to twice the step's zoom.
+  zoom?: number;
 };
 
 export type MapText = {
@@ -154,6 +165,26 @@ export const steps: Step[] = [
       "记住这条航线。二十七年后，战争就在这里结束。",
     ],
     camera: { at: [26.3, 39.5], zoom: 1.7 },
+    beats: [
+      {
+        at: [29.02, 41.025],
+        title: "黑海的出口",
+        text: `运粮船从这里驶出黑海。公元前 410 年，雅典人在拜占庭对岸的克律索波利斯筑垒设关，向驶出黑海的船只征收十分之一的关税${xen("1.1.22")}。`,
+        zoom: 7,
+      },
+      {
+        at: [26.4, 40.15],
+        title: "赫勒斯滂",
+        text: "按今天的测量，海峡最窄处（今恰纳卡莱）只有约 1.2 公里，所有运粮船都要从这里挤过去。谁守住这里，谁就掐住了雅典的喉咙。",
+        zoom: 8,
+      },
+      {
+        at: "sunium",
+        title: "苏尼昂角",
+        text: `运粮船进港前的最后一个转角。斯巴达人占据狄西里亚后，优卑亚的物资不能再经陆路运来，只能花大价钱绕过这里走海路${tc("7.28.1")}。`,
+        zoom: 9,
+      },
+    ],
     labels: ["byzantium", "sestos", "sunium", "athens"],
     marks: [
       {
@@ -222,6 +253,14 @@ export const steps: Step[] = [
       `修昔底德还记下一件事：斯巴达宣布，作战有功的黑劳士可以获得自由。被选出的两千人戴着花冠绕行神庙，不久，他们全都不见了${tc("4.80.3 – 4")}。`,
     ],
     camera: { at: [22.1, 37.55], zoom: 4.6 },
+    beats: [
+      {
+        at: "ithome",
+        title: "第一次交恶",
+        text: `斯巴达曾请雅典派兵帮助围攻伊托米山，随后又单单把雅典人打发回去。两国第一次公开交恶${tc("1.102.1 – 3")}。`,
+        zoom: 9,
+      },
+    ],
     labels: ["sparta", "ithome", "naupactus"],
     marks: [
       { type: "pulse", place: "ithome", side: "sparta", at: [0.2, 0.55] },
@@ -316,6 +355,20 @@ export const steps: Step[] = [
       `这是伯里克利战略的另一半：守住海军，不在战争中扩张帝国，耗到对方放弃${tc("2.65.7")}。`,
     ],
     camera: { at: [22.4, 37.5], zoom: 2.8 },
+    beats: [
+      {
+        at: "methone",
+        title: "布拉西达斯第一次登场",
+        text: `雅典人进攻无人驻守的墨托涅。斯巴达人布拉西达斯带一百名重装步兵冲过散开的雅典军队，进城守住了它，成为这场战争中第一个受到斯巴达嘉奖的人${tc("2.25.1 – 2")}。`,
+        zoom: 9,
+      },
+      {
+        at: "pheia",
+        title: "劫掠伊利斯",
+        text: `舰队在伊利斯的菲亚登陆，劫掠两天，击败三百名援兵。美塞尼亚人随后从陆路攻下菲亚；伊利斯大军赶到时，雅典人已弃城登船${tc("2.25.3 – 5")}。`,
+        zoom: 8,
+      },
+    ],
     labels: ["athens", "sparta", "corinth", "elis", "zacynthus", "naupactus"],
     marks: [
       {
@@ -361,6 +414,14 @@ export const steps: Step[] = [
       `米提列涅得救了，但据修昔底德记载，被押到雅典的一千余名“主谋者”仍按克里昂的提议被处死${tc("3.50.1")}。`,
     ],
     camera: { at: [25.1, 38.6], zoom: 2.7 },
+    beats: [
+      {
+        at: [25.3, 38.45],
+        title: "日夜不停",
+        text: `第二艘船的桨手轮班睡觉，一边划桨一边吃用酒和油和成的大麦饼。第一艘船比它早出发了大约一天一夜${tc("3.49.2 – 3")}。`,
+        zoom: 4.5,
+      },
+    ],
     labels: ["athens", "mytilene"],
     inset: {
       type: "image",
@@ -429,6 +490,32 @@ export const steps: Step[] = [
       `两年后，布拉西达斯与雅典主战派领袖克里昂在安菲波利斯城下的同一场战斗中先后死去${tc("5.10")}。`,
     ],
     camera: { at: [23.2, 39.4], zoom: 2.6 },
+    beats: [
+      {
+        at: "pharsalus",
+        title: "急行穿过色萨利",
+        text: `色萨利民众一向亲雅典。布拉西达斯由当地友人护送，赶在对方聚集更多人阻拦之前不停急行，一天就赶到法萨卢斯${tc("4.78.2 – 5")}。`,
+        zoom: 6,
+      },
+      {
+        at: "acanthus",
+        title: "葡萄与演说",
+        text: `布拉西达斯在葡萄收获前夕兵临阿坎苏斯。城里秘密投票，多数人被他的演说打动，又担心城外的果实，决定叛离雅典${tc("4.84.1, 4.88.1")}。`,
+        zoom: 7,
+      },
+      {
+        at: "amphipolis",
+        title: "雪夜奇袭",
+        text: `冬天的一个夜里，风急，下着小雪。他赶走斯特律蒙河桥头的少量守兵，过了河，安菲波利斯城外的人和财物都落入他手${tc("4.102.1, 4.103.2 – 5")}。`,
+        zoom: 8,
+      },
+      {
+        at: "eion",
+        title: "晚了一步",
+        text: `修昔底德带着 7 艘船从半天航程外的萨索斯赶来。当天晚些时候他驶进埃翁港时，安菲波利斯刚刚投降，他只保住了河口的埃翁${tc("4.104.4 – 5, 4.106.3 – 4")}。`,
+        zoom: 8,
+      },
+    ],
     labels: ["corinth", "heraclea", "pharsalus", "dion", "acanthus", "amphipolis", "thasos"],
     marks: [
       {
@@ -483,6 +570,32 @@ export const steps: Step[] = [
       `修昔底德说，大多数雅典人连西西里有多大、住着多少人都不知道${tc("6.1.1")}。出发前，城中的赫尔墨斯神像一夜之间被毁，亵渎秘仪的指控又牵连到亚西比德${tc("6.27 – 28")}。他在西西里被召回受审，半路逃走，投奔了斯巴达${tc("6.53, 6.61, 6.88.9")}。`,
     ],
     camera: { at: [19.2, 38.4], zoom: 1.35 },
+    beats: [
+      {
+        at: "corcyra",
+        title: "科西拉集结",
+        text: `全军在科西拉集结：134 艘三列桨战舰、5,100 名重装步兵、480 名弓手、700 名罗得岛投石手${tc("6.43")}。`,
+        zoom: 4,
+      },
+      {
+        at: "tarentum",
+        title: "冷淡的意大利",
+        text: `沿途的意大利城邦都关起城门和集市，只许雅典人取水、停泊；他林敦和洛克里连这也不给${tc("6.44.2")}。`,
+        zoom: 4,
+      },
+      {
+        at: "segesta",
+        title: "借来的财富",
+        text: `塞杰斯塔人私下宴请雅典船员，把城里的金银杯连同从邻城借来的，各家轮流摆上桌充门面。真要掏钱时，只拿得出三十塔兰特${tc("6.46.1 – 4")}。`,
+        zoom: 4,
+      },
+      {
+        at: "catana",
+        title: "从小门混进城",
+        text: `卡塔那不肯接纳雅典军队。趁亚西比德在大会上讲话，士兵砸开一道没砌牢的小门，涌进集市；亲叙拉古派溜走，其余人投票结盟${tc("6.51.1 – 2")}。`,
+        zoom: 5,
+      },
+    ],
     labels: ["athens", "corcyra", "tarentum", "rhegium", "catana", "syracuse", "segesta"],
     marks: [
       {
@@ -529,6 +642,14 @@ export const steps: Step[] = [
       `四万人从陆上撤退，在饥渴中被一路追杀。在阿西纳鲁斯河，口渴的士兵冲进河里争相喝水，敌人从岸上射杀他们，河水被血染红，人们仍在抢着喝${tc("7.75.5, 7.84")}。被俘者至少七千人${tc("7.87.4")}，被关进露天的采石场，白天曝晒，夜里受冻${tc("7.87.1")}。`,
     ],
     camera: { at: [15.2, 37.05], zoom: 7 },
+    beats: [
+      {
+        at: [15.27, 37.05],
+        title: "大港决战",
+        text: `岸上的雅典士兵看着港里的海战，身体随战局摇摆；“我们赢了！”“我们输了！”的喊声此起彼伏${tc("7.71.3 – 4")}。`,
+        zoom: 14,
+      },
+    ],
     labels: ["syracuse", "assinarus"],
     marks: [
       { type: "blockade", place: "syracuse", side: "sparta", radius: 14, at: [0.1, 0.4] },
@@ -574,6 +695,14 @@ export const steps: Step[] = [
       `过去从优卑亚经陆路运来的物资，现在只能绕过苏尼昂角走海路，代价高昂。修昔底德说，雅典“从一座城变成了一座要塞”${tc("7.28.1")}。`,
     ],
     camera: { at: [23.75, 38.15], zoom: 9 },
+    beats: [
+      {
+        at: "decelea",
+        title: "望得见的要塞",
+        text: `狄西里亚离雅典约一百二十斯塔德，从雅典城就能望见${tc("7.19.2")}。`,
+        zoom: 14,
+      },
+    ],
     labels: ["athens", "decelea", "chalcis", "sunium"],
     marks: [
       { type: "pulse", place: "decelea", side: "sparta", at: [0.05, 0.5] },
@@ -600,6 +729,14 @@ export const steps: Step[] = [
       `公元前 411 年，雅典的民主一度被“四百人”寡头政权推翻${tc("8.63 – 70")}。`,
     ],
     camera: { at: [26.0, 38.4], zoom: 2.2 },
+    beats: [
+      {
+        at: "sardis",
+        title: "居鲁士的宝座",
+        text: `后来波斯王子居鲁士来到萨迪斯。他对吕山德说，自己带来五百塔兰特；不够就动用私产，再不够，就把坐着的金银宝座拆了${xen("1.5.1 – 3")}。`,
+        zoom: 5,
+      },
+    ],
     labels: ["athens", "sardis", "miletus", "chios", "samos", "rhodes"],
     ripple: { from: "chios", start: 0.08, span: 0.32 },
     marks: [{ type: "flow", via: ["sardis", [27.8, 37.9], "miletus"], side: "persia", at: [0.35, 1] }],
@@ -674,6 +811,20 @@ export const steps: Step[] = [
       `“帕拉卢斯号”夜里抵达比雷埃夫斯，哭声沿着长墙一路传进城里。那一夜没有一个人睡着，人们想起了自己曾对米洛斯人做过的事${xen("2.2.3")}。`,
     ],
     camera: { at: [26.55, 40.3], zoom: 14 },
+    beats: [
+      {
+        at: "lampsacus",
+        title: "满是酒和粮食的富城",
+        text: `吕山德强攻拿下了雅典的盟邦兰普萨库斯，色诺芬说这是一座“满是酒和粮食的富城”${xen("2.1.18 – 19")}。`,
+        zoom: 22,
+      },
+      {
+        at: [26.645, 40.34],
+        title: "举盾为号",
+        text: `第五天，尾随雅典舰队的快船看到雅典人上岸散开，便掉头回航，在海峡中途举起盾牌。吕山德随即下令全速出击${xen("2.1.27 – 28")}。`,
+        zoom: 22,
+      },
+    ],
     labels: ["aegospotami", "lampsacus", "sestos"],
     marks: [
       { type: "route", via: ["lampsacus", [26.645, 40.345], "aegospotami"], side: "sparta", style: "fleet", ships: 6, tag: "吕山德", draw: [0.45, 0.66] },

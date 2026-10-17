@@ -78,6 +78,8 @@ export const places = {
   trogilus: { name: "特罗吉卢斯", en: "Trogilus", at: [15.26, 37.12], label: "n" },
   epipolae: { name: "埃皮波莱", en: "Epipolae", at: [15.23, 37.095], label: "w" },
   assinarus: { name: "阿西纳鲁斯河", en: "Assinarus", at: [15.07, 36.87], label: "w" },
+  methone: { name: "墨托涅", en: "Methone", at: [21.704, 36.814], label: "w" },
+  pheia: { name: "菲亚", en: "Pheia", at: [21.311, 37.661], label: "w" },
 } satisfies Record<string, Place>;
 
 export type PlaceId = keyof typeof places;
