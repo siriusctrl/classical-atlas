@@ -1,0 +1,37 @@
+{
+  "name": "classical-atlas",
+  "version": "1.0.0",
+  "description": "Interactive map stories of the classical world.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "check": "tsc && vite build",
+    "preview": "vite preview",
+    "build:land": "node scripts/build-land.mjs"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/d3-geo": "^3.1.1",
+    "@types/d3-interpolate": "^3.0.4",
+    "@types/node": "^26.6.5",
+    "@types/topojson-client": "^3.1.5",
+    "@types/topojson-specification": "^1.0.5",
+    "topojson-server": "^3.0.1",
+    "topojson-simplify": "^3.0.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "world-atlas": "^2.0.2"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-serif-sc": "^5.3.1",
+    "@fontsource/cormorant-garamond": "^5.3.0",
+    "d3-geo": "^3.1.1",
+    "d3-interpolate": "^3.0.1",
+    "topojson-client": "^3.1.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

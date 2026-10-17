@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="伯罗奔尼撒战争（公元前 431–404 年）的交互地图叙事：雅典与斯巴达，二十七年，一部没有写完的史书。" />
+    <meta name="color-scheme" content="light dark" />
+    <title>伯罗奔尼撒战争 · Classical Atlas</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23b23a2e'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23f4efe4'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="map" aria-hidden="true">
+      <svg class="map-svg"></svg>
+      <div class="map-grain"></div>
+      <div class="map-vignette"></div>
+      <div class="map-dim"></div>
+      <div class="map-year">
+        <div class="year"><span class="year-era">公元前</span><span class="year-number"></span></div>
+        <div class="ruler"></div>
+      </div>
+      <div class="map-inset"></div>
+    </div>
+
+    <header class="masthead">
+      <span class="masthead-series">Classical Atlas · 01</span>
+      <button class="play" type="button" aria-pressed="false">
+        <span class="play-icon" aria-hidden="true"></span>
+        <span class="play-label">自动播放</span>
+      </button>
+    </header>
+
+    <main class="story"></main>
+
+    <footer class="sources">
+      <h2>资料与说明</h2>
+      <ul>
+        <li>史料：修昔底德《伯罗奔尼撒战争史》，色诺芬《希腊史》。引文标注卷、章、节，文字为本页据英译本转述，并非某一中译本原文。</li>
+        <li>地图：海岸线来自 Natural Earth（公有领域），是现代海岸线；古代海岸与今天有出入。城市位置为近似值。</li>
+        <li>阵营归属依据修昔底德 2.9 的盟邦名单简化绘制，只标出了文中提到的城邦，并不是完整的同盟成员表。光晕表示势力所及，是示意，不是疆界。</li>
+        <li>斯法克特里亚岛不在 Natural Earth 的数据里，图中轮廓为手工示意。</li>
+        <li>文物照片来自维基共享资源和博物馆的开放资源，作者与授权见各图说明。古代人物胸像多为罗马时代的仿制品。</li>
+      </ul>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
