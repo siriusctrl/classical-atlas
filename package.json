@@ -7,7 +7,8 @@
     "build": "tsc && vite build",
     "check": "tsc && vite build",
     "preview": "vite preview",
-    "build:land": "node scripts/build-land.mjs"
+    "build:land": "node scripts/build-land.mjs",
+    "audit:overlaps": "node scripts/audit-overlaps.mjs"
   },
   "type": "module",
   "devDependencies": {

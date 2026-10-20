@@ -328,6 +328,18 @@ const mapTexts = [
   return { text, group, world: toWorld(text.at) };
 });
 
+// Text extents, measured once the fonts are in (relayout clears them).
+let extents = new WeakMap<SVGGraphicsElement, Box>();
+const extentOf = (element: SVGGraphicsElement): Box => {
+  let extent = extents.get(element);
+  if (!extent) {
+    const { x, y, width, height } = element.getBBox();
+    extent = { x: x - 2, y: y - 2, w: width + 4, h: height + 4 };
+    extents.set(element, extent);
+  }
+  return extent;
+};
+
 const zoomBand = (text: MapText) => {
   const [low, high] = text.zoom;
   return smooth((zoomNow - low * 0.8) / (low * 0.35)) * (1 - smooth((zoomNow - high) / (high * 0.4)));
@@ -339,6 +351,16 @@ const renderMapTexts = (dimmed: number, receded: number) => {
     const [x, y] = screen(at);
     set(group, "opacity", alpha.toFixed(3));
     set(group, "transform", `translate(${fixed(x)},${fixed(y)})${text.rotate ? ` rotate(${text.rotate})` : ""}`);
+    if (alpha > 0.05) {
+      // The name and its Latin line, turned with the text, as an upright box.
+      const local = extentOf(group);
+      const angle = ((text.rotate ?? 0) * Math.PI) / 180;
+      const corners = [[local.x, local.y], [local.x + local.w, local.y], [local.x, local.y + local.h], [local.x + local.w, local.y + local.h]]
+        .map(([cx, cy]) => [x + cx * Math.cos(angle) - cy * Math.sin(angle), y + cx * Math.sin(angle) + cy * Math.cos(angle)]);
+      const xs = corners.map(([cx]) => cx);
+      const ys = corners.map(([, cy]) => cy);
+      claims.texts.push({ element: group, alpha, box: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) } });
+    }
   }
 };
 
@@ -433,8 +455,18 @@ const shipNode = (parent: Element) => svgElement("path", { class: "ship-hull", d
 
 type MarkLayers = { under: SVGGElement; over: SVGGElement; labels: SVGGElement };
 type Box = { x: number; y: number; w: number; h: number };
-// Text that place labels must not collide with this frame (route tags).
-const labelObstacles: Box[] = [];
+// Everything this frame that competes for room on screen, collected by the renderers and
+// settled by arrange() once the frame is drawn.
+type Claim = { element: SVGElement; box: Box; alpha: number };
+const claims = {
+  // Fixed boxes nothing may cover: the callout and the narration.
+  fixed: [] as Box[],
+  dots: [] as Array<{ id: PlaceId; elements: SVGElement[]; alphas: number[]; box: Box }>,
+  pins: [] as Claim[],
+  labels: [] as Array<{ node: (typeof placeNodes)[number]; alpha: number; priority: number; x: number; y: number; radius: number }>,
+  tags: [] as Claim[],
+  texts: [] as Claim[],
+};
 
 const markRenderer = (mark: Mark, { under, over, labels }: MarkLayers): Renderer => {
   const color = () => ("side" in mark ? colors[mark.side] : colors.ink);
@@ -519,10 +551,10 @@ const markRenderer = (mark: Mark, { under, over, labels }: MarkLayers): Renderer
           const tagAlpha = visible * smooth(u * 8);
           set(tag, "opacity", tagAlpha.toFixed(3));
           if (tagAlpha > 0.05) {
-            const width = mark.tag!.length * 12.5;
+            const width = tag.getComputedTextLength() + 6;
             const tx = lead.x + Math.sin(radians) * 17 * side;
             const ty = lead.y - Math.cos(radians) * 17 * side + 4;
-            labelObstacles.push({ x: tx - width / 2, y: ty - 12, w: width, h: 15 });
+            claims.tags.push({ element: tag, box: { x: tx - width / 2, y: ty - 14, w: width, h: 19 }, alpha: tagAlpha });
           }
         }
         const length = screenLength(geometry);
@@ -771,8 +803,8 @@ const placeNodes = placeIds.map((id) => {
   const group = svgElement("g", {}, placeLayer);
   const ripple = svgElement("circle", { fill: "none", "stroke-width": 1.5 }, group);
   const ring = major ? svgElement("circle", { fill: "none", "stroke-width": 1.3 }, group) : undefined;
-  const dot = svgElement("circle", { "stroke-width": 1.6 }, group);
-  const label = svgElement("text", { class: `place-label${major ? " is-major" : ""}` }, labelLayer);
+  const dot = svgElement("circle", { class: "place-dot", "stroke-width": 1.6, "data-place": id }, group);
+  const label = svgElement("text", { class: `place-label${major ? " is-major" : ""}`, "data-place": id }, labelLayer);
   label.textContent = place.name;
   const direction = place.label ?? "e";
   const gap = major ? 14 : 9;
@@ -884,12 +916,10 @@ const spotlightAt = (frame: Frame) => {
   return undefined;
 };
 
-type LabelCandidate = { node: (typeof placeNodes)[number]; alpha: number; priority: number; box: Box };
 
 const renderPlaces = (frame: Frame, dimmed: number) => {
   const { P, step, previous: lastStep, enter, leave } = frame;
   glows.length = 0;
-  const candidates: LabelCandidate[] = [];
   // The score of the war as the map shows it: cities currently on each side.
   const count = { athens: 0, sparta: 0 };
   for (const node of placeNodes) {
@@ -992,19 +1022,24 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       set(piece, "opacity", ruined > 0 && ruined < 1 ? ((1 - ruined) * 0.8).toFixed(3) : "0");
     });
 
-    const lx = x + node.offset[0];
-    const ly = y + node.offset[1];
-    set(node.label, "x", fixed(lx));
-    set(node.label, "y", fixed(ly));
+    const dotAlpha = alpha * focus * (1 - dimmed * 0.6);
+    if (dotAlpha > 0.05 && radius > 0.5) {
+      const reach = Math.max(radius, node.ring ? 11 * pop : 0) + 1;
+      claims.dots.push({
+        id: node.id,
+        elements: node.ring ? [node.dot, node.ring] : [node.dot],
+        alphas: node.ring ? [dotAlpha, alpha * 0.7 * focus * (1 - dimmed)] : [dotAlpha],
+        box: { x: x - reach, y: y - reach, w: reach * 2, h: reach * 2 },
+      });
+    }
     if (labelAlpha > 0.02) {
-      const size = node.major ? 15 : 13;
-      const width = places[node.id].name.length * size * (node.major ? 1.1 : 1) + 4;
-      const left = node.offset[0] > 0 ? lx : node.offset[0] < 0 ? lx - width : lx - width / 2;
-      candidates.push({
+      claims.labels.push({
         node,
         alpha: labelAlpha,
         priority: (isHovered ? 8 : 0) + (arrival && arrival.lit > 0.5 ? 6 : 0) + (here ? 4 : 0) + (node.major ? 2 : 0) + focus,
-        box: { x: left - 2, y: ly - size, w: width + 4, h: size + 5 },
+        x,
+        y,
+        radius: Math.max(radius, node.ring ? 11 * pop : 0),
       });
     } else {
       set(node.label, "opacity", "0");
@@ -1014,16 +1049,6 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
   if (tallyAthens.textContent !== String(count.athens)) tallyAthens.textContent = String(count.athens);
   if (tallySparta.textContent !== String(count.sparta)) tallySparta.textContent = String(count.sparta);
   tally.style.opacity = (count.athens + count.sparta > 0 ? 1 - dimmed : 0).toFixed(3);
-
-  // Labels never overlap: the most important claims its space first, lesser ones give way.
-  const placed: Box[] = [...labelObstacles];
-  const overlaps = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-  candidates.sort((a, b) => b.priority - a.priority);
-  for (const candidate of candidates) {
-    const clear = !placed.some((box) => overlaps(box, candidate.box));
-    if (clear) placed.push(candidate.box);
-    set(candidate.node.label, "opacity", (clear ? candidate.alpha : 0).toFixed(3));
-  }
 };
 
 // ---------- Year and ruler ----------
@@ -1353,7 +1378,7 @@ const render = (frame: Frame) => {
     lastFilter = filter;
   }
 
-  labelObstacles.length = 0;
+  for (const list of Object.values(claims)) list.length = 0;
   stepGroups.forEach(({ groups, renderers }, index) => {
     const current = index === step;
     const outgoing = index === previous && index !== step && fade < 1;
@@ -1393,6 +1418,7 @@ const beatNodes = steps.map((step) => (step.beats ?? []).map((beat, index) => {
 }));
 const leader = svgElement("path", { class: "callout-leader" }, beatLayer);
 let calloutKey = "";
+let calloutSide = 0;
 
 const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
   const pins = smooth((f - 0.8) / 0.15) * (1 - dimmed);
@@ -1404,8 +1430,11 @@ const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
       if (!current) continue;
       const [x, y] = screen(node.world);
       node.screen = [x, y];
-      set(node.group, "transform", `translate(${fixed(x)},${fixed(y)}) scale(${(0.6 + 0.4 * backOut(pins)).toFixed(3)})`);
+      const scale = 0.6 + 0.4 * backOut(pins);
+      set(node.group, "transform", `translate(${fixed(x)},${fixed(y)}) scale(${scale.toFixed(3)})`);
       set(node.group, "opacity", pins.toFixed(3));
+      const reach = 12 * scale;
+      claims.pins.push({ element: node.group, alpha: pins, box: { x: x - reach, y: y - reach, w: reach * 2, h: reach * 2 } });
       set(node.group, "class", `beat-pin${order === beat ? " is-active" : ""}`);
     }
   });
@@ -1419,19 +1448,25 @@ const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
   const key = `${step}:${beat}`;
   if (key !== calloutKey) {
     calloutKey = key;
+    calloutSide = 0;
     callout.innerHTML = `<div class="callout-index">${beat! + 1}</div><h3>${node.beat.title}</h3><p>${node.beat.text}</p>`;
   }
-  // Beside the pin, away from the story card, kept on screen.
+  // Beside the pin, on whichever side covers the least of what was shown last frame, kept on
+  // screen and off the story card.
   const [x, y] = node.screen;
   const width = callout.offsetWidth;
   const height = callout.offsetHeight;
-  let left = x + 34;
-  if (left + width > window.innerWidth - 16) left = x - 34 - width;
-  if (!layout.mobile && left < layout.stage.x) left = Math.min(x + 34, window.innerWidth - width - 16);
-  let top = y - height - 26;
-  if (top < 72) top = y + 26;
-  top = clamp(top, 72, window.innerHeight - height - 90);
-  left = clamp(left, 12, window.innerWidth - width - 12);
+  const sides = [[x + 34, y - height - 26], [x - 34 - width, y - height - 26], [x + 34, y + 26], [x - 34 - width, y + 26]]
+    .map(([sx, sy]) => [
+      clamp(!layout.mobile && sx < layout.stage.x ? x + 34 : sx, 12, window.innerWidth - width - 12),
+      clamp(sy, 72, window.innerHeight - height - 90),
+    ]);
+  const cost = ([sx, sy]: number[]) => shownLastFrame.reduce((total, box) => total + overlapArea({ x: sx - 8, y: sy - 8, w: width + 16, h: height + 16 }, box), 0);
+  const preferred = sides[calloutSide] ?? sides[0];
+  const best = sides.reduce((a, b) => (cost(b) < cost(a) ? b : a));
+  if (cost(best) + 200 < cost(preferred)) calloutSide = sides.indexOf(best);
+  const [left, top] = sides[calloutSide];
+  if (beatAppear > 0.02) claims.fixed.push({ x: left - 6, y: top - 6, w: width + 12, h: height + 12 });
   callout.style.left = `${left.toFixed(1)}px`;
   callout.style.top = `${top.toFixed(1)}px`;
   callout.style.opacity = beatAppear.toFixed(3);
@@ -1682,7 +1717,7 @@ const subtitlePlan = (index: number): Slot[] => {
     const here = anchors.length
       ? [anchors.reduce((sum, [x]) => sum + x, 0) / anchors.length, anchors.reduce((sum, [, y]) => sum + y, 0) / anchors.length] as XY
       : last;
-    const travel = !last ? 1 : here ? Math.min(1, (Math.hypot(here[0] - last[0], here[1] - last[1]) * scale) / diagonal) : 0;
+    const travel = !last ? 1 : here && diagonal > 0 ? Math.min(1, (Math.hypot(here[0] - last[0], here[1] - last[1]) * scale) / diagonal) : 0;
     last = here ?? last;
     const cost = textCost(html) + WORTH.refocus * travel + visuals[order].reduce((total, visual) => total + visual.cost, 0);
     const slot = { html, start: at, end: at + seconds(cost), visuals: visuals[order] };
@@ -2393,7 +2428,6 @@ const initial = frozen ?? (hashStep > 0 ? hashStep : 0);
 state.step = initial;
 state.changedAt = clock() - (frozen === undefined ? 0 : frozenSeconds * 1000);
 if (state.tour.on) {
-  state.tour.base = tourStart(initial);
   document.body.classList.add("is-documentary");
 }
 
@@ -2425,7 +2459,7 @@ const renderDocumentary = (now: number) => {
 // the places it names, else where the eye already is — in the clearest nearby space, so
 // reading and looking happen in the same place. Captions hold to the map as it drifts.
 const narration = document.querySelector<HTMLElement>(".narration")!;
-type Caption = { key: string; step: number; element: HTMLElement; world: XY; start: number; end: number; alpha: number };
+type Caption = { key: string; step: number; element: HTMLElement; world: XY; start: number; end: number; alpha: number; w: number; h: number };
 let captions: Caption[] = [];
 
 
@@ -2475,13 +2509,45 @@ const captionObstacles = (index: number, project: (point: XY) => XY, tau: number
     boxes.push({ x: x - 16, y: y - 16, w: 32, h: 32 });
   }
   const chrome = [".map-tools", ".map-year", ".controls", ".masthead", ".chapters"];
-  if (insetsOf(index).length) chrome.push(".map-inset");
   if (tau < 6) chrome.push(".chapter-tag");
+  boxes.push(...insetFootprint(index));
   for (const selector of chrome) {
     const rect = document.querySelector(selector)?.getBoundingClientRect();
     if (rect && rect.width > 0 && rect.height > 0) boxes.push({ x: rect.left - 14, y: rect.top - 14, w: rect.width + 28, h: rect.height + 28 });
   }
   return boxes;
+};
+
+// The corner the step's insets will take, at the size of the largest: a caption placed now
+// must not sit where a later inset appears.
+const footprints = new Map<string, Box[]>();
+const insetFootprint = (index: number): Box[] => {
+  const key = `${index}|${layout.width}x${layout.height}`;
+  const known = footprints.get(key);
+  if (known) return known;
+  const list = insetsOf(index);
+  let box: Box[] = [];
+  if (list.length) {
+    const [html, className, opacity] = [insetElement.innerHTML, insetElement.className, insetElement.style.opacity];
+    insetElement.style.opacity = "0";
+    const rects = list.map((inset) => {
+      insetElement.className = "map-inset";
+      buildInset(inset);
+      return insetElement.getBoundingClientRect();
+    });
+    [insetElement.innerHTML, insetElement.className, insetElement.style.opacity] = [html, className, opacity];
+    insetKey = "";
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    box = [{
+      x: left - 14,
+      y: top - 14,
+      w: Math.max(...rects.map((rect) => rect.right)) - left + 28,
+      h: Math.max(...rects.map((rect) => rect.bottom)) - top + 28,
+    }];
+  }
+  footprints.set(key, box);
+  return box;
 };
 
 // The clearest spot near the subject, close to where the previous caption left the eye.
@@ -2507,7 +2573,8 @@ const placeCaption = (size: { w: number; h: number }, target: Box, obstacles: Bo
     let score = outside ? 1e9 : 0;
     for (const obstacle of obstacles) score += overlapArea(padded, obstacle) / 25;
     score += boxGap(box, target) * 1.2;
-    if (previous) score += overlapArea(padded, previous) / 10 + boxGap(box, previous) * 0.15;
+    // The previous sentence is still fading out: never on top of it, but near it.
+    if (previous) score += overlapArea(padded, previous) * 5 + boxGap(box, previous) * 0.15;
     if (score < bestScore) [best, bestScore] = [box, score];
   }
   return best!;
@@ -2575,7 +2642,7 @@ const renderNarration = (now: number) => {
     // Stored in world units so the caption rides the map.
     const scale = project([1, 0])[0] - project([0, 0])[0];
     const [ox, oy] = project([0, 0]);
-    captions.push({ key, step: index, element, world: [(box.x - ox) / scale, (box.y - oy) / scale], start: line.start, end: line.end, alpha: 0 });
+    captions.push({ key, step: index, element, world: [(box.x - ox) / scale, (box.y - oy) / scale], start: line.start, end: line.end, alpha: 0, w: size.w, h: size.h });
   }
 
   captions = captions.filter((caption) => {
@@ -2593,6 +2660,8 @@ const renderNarration = (now: number) => {
     style.opacity = (caption.step === index ? caption.alpha : caption.alpha * (1 - leaving)).toFixed(3);
     style.transform = `translate(${x.toFixed(1)}px, ${(y + (1 - appear) * 8 - fade * 6).toFixed(1)}px)`;
     style.setProperty("--p", ((tau - caption.start + 0.2) * WRITE_RATE * state.speed).toFixed(2));
+    // Room is taken as soon as the caption starts to appear, so nothing is caught beneath it.
+    if (Number(style.opacity) > 0.02) claims.fixed.push({ x: x - 10, y: y - 10, w: caption.w + 20, h: caption.h + 20 });
     return true;
   });
 };
@@ -2602,12 +2671,138 @@ const boxOf = (caption: Caption, project: (point: XY) => XY) => {
   return { x, y };
 };
 
+// ---------- Arrangement ----------
+
+// One pass settles what may be drawn where, in priority order: the chrome, insets, callout
+// and narration first; then city dots and tour pins, which stay where they are but fade
+// beneath those; then city names, each trying eight positions around its dot; then the
+// ships' tags; then region and sea names. Whatever finds no room fades out rather than
+// cover something more important, and fades ease so nothing pops.
+let chromeBoxes: Box[] = [];
+const measureChrome = () => {
+  chromeBoxes = [".map-tools", ".map-year", ".controls", ".masthead", ".chapters"].flatMap((selector) => {
+    const rect = document.querySelector(selector)?.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? [{ x: rect.left - 4, y: rect.top - 4, w: rect.width + 8, h: rect.height + 8 }] : [];
+  });
+};
+const visibleBox = (element: HTMLElement) => {
+  if (Number(getComputedStyle(element).opacity) < 0.3) return [];
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 ? [{ x: rect.left - 6, y: rect.top - 6, w: rect.width + 12, h: rect.height + 12 }] : [];
+};
+
+const DIRECTIONS: Record<string, XY> = { e: [1, 0], w: [-1, 0], ne: [1, -1], nw: [-1, -1], se: [1, 1], sw: [-1, 1], n: [0, -1], s: [0, 1] };
+const slotOrder = (preferred: string) => [preferred, ...Object.keys(DIRECTIONS).filter((direction) => direction !== preferred)];
+const labelWidths = new Map<PlaceId, number>();
+// A name beside its dot, at a distance that clears the dot, in one of eight directions.
+const labelSlot = (node: (typeof placeNodes)[number], x: number, y: number, gap: number, direction: string) => {
+  const [ux, uy] = DIRECTIONS[direction];
+  const size = node.major ? 15 : 13;
+  let width = labelWidths.get(node.id);
+  if (width === undefined) labelWidths.set(node.id, (width = node.label.getComputedTextLength() + 4));
+  const diagonal = ux !== 0 && uy !== 0 ? Math.SQRT1_2 : 1;
+  const ax = x + ux * gap * diagonal;
+  const ay = y + uy * gap * diagonal;
+  const height = size + 3;
+  const left = ux > 0 ? ax : ux < 0 ? ax - width : ax - width / 2;
+  const top = uy < 0 ? ay - height : uy > 0 ? ay : ay - height / 2;
+  return {
+    box: { x: left - 1, y: top - 1, w: width + 2, h: height + 2 },
+    x: ux > 0 ? left + 2 : ux < 0 ? left + width - 2 : left + width / 2,
+    y: top + size * 0.88 + 1,
+    anchor: ux > 0 ? "start" : ux < 0 ? "end" : "middle",
+  };
+};
+const labelSlots = new Map<PlaceId, string>();
+
+const faded = new WeakMap<Element, number>();
+let arrangedAt = 0;
+let shownLastFrame: Box[] = [];
+
+const arrange = (time: number) => {
+  const dt = time - arrangedAt;
+  arrangedAt = time;
+  const ease = (element: Element, target: number) => {
+    const last = faded.get(element);
+    // Giving way is quick, coming back is gentle.
+    const value = last === undefined || dt <= 0 || dt > 0.5 ? target : last + (target - last) * Math.min(1, dt / (target < last ? 0.08 : 0.25));
+    faded.set(element, value);
+    return value;
+  };
+  const blocked = (box: Box, boxes: Box[], except?: Box) => boxes.some((other) => other !== except && overlapArea(box, other) > 2);
+
+  const card = document.querySelector<HTMLElement>(".panel > .is-active");
+  const fixedBoxes = [...chromeBoxes, ...claims.fixed, ...visibleBox(insetElement), ...visibleBox(chapterTag),
+    ...(card && !state.documentary.on ? visibleBox(card) : [])];
+  const placed: Box[] = [...fixedBoxes];
+
+  const dotBoxes = new Map<PlaceId, Box>();
+  for (const dot of claims.dots) {
+    const room = ease(dot.elements[0], blocked(dot.box, fixedBoxes) ? 0.12 : 1);
+    dot.elements.forEach((element, order) => set(element, "opacity", (dot.alphas[order] * room).toFixed(3)));
+    if (room > 0.5) {
+      placed.push(dot.box);
+      dotBoxes.set(dot.id, dot.box);
+    }
+  }
+  for (const pin of claims.pins) {
+    const room = ease(pin.element, blocked(pin.box, fixedBoxes) ? 0 : 1);
+    set(pin.element, "opacity", (pin.alpha * room).toFixed(3));
+    if (room > 0.5) placed.push(pin.box);
+  }
+
+  const shown: Box[] = [];
+  for (const label of claims.labels.sort((a, b) => b.priority - a.priority)) {
+    const { node } = label;
+    const own = dotBoxes.get(node.id);
+    const preferred = labelSlots.get(node.id) ?? places[node.id].label ?? "e";
+    let chosen: ReturnType<typeof labelSlot> | undefined;
+    let direction = preferred;
+    // Close to the dot first; a step further out if a pin sits on the city.
+    search: for (const gap of [label.radius + 3, label.radius + 15]) {
+      for (const candidate of slotOrder(preferred)) {
+        const slot = labelSlot(node, label.x, label.y, gap, candidate);
+        if (!blocked(slot.box, placed, own)) {
+          [chosen, direction] = [slot, candidate];
+          break search;
+        }
+      }
+    }
+    const room = ease(node.label, chosen ? 1 : 0);
+    if (chosen) {
+      labelSlots.set(node.id, direction);
+      set(node.label, "x", fixed(chosen.x));
+      set(node.label, "y", fixed(chosen.y));
+      set(node.label, "text-anchor", chosen.anchor);
+      placed.push(chosen.box);
+      shown.push(chosen.box);
+    } else {
+      const slot = labelSlot(node, label.x, label.y, label.radius + 3, preferred);
+      set(node.label, "x", fixed(slot.x));
+      set(node.label, "y", fixed(slot.y));
+    }
+    set(node.label, "opacity", (label.alpha * room).toFixed(3));
+  }
+
+  for (const tag of claims.tags) {
+    const room = ease(tag.element, blocked(tag.box, placed) ? 0 : 1);
+    set(tag.element, "opacity", (tag.alpha * room).toFixed(3));
+    if (room > 0.5) placed.push(tag.box);
+  }
+  for (const text of claims.texts) {
+    const room = ease(text.element, blocked(text.box, placed) ? 0 : 1);
+    set(text.element, "opacity", (text.alpha * room).toFixed(3));
+  }
+  shownLastFrame = [...shown, ...[...dotBoxes.values()]];
+};
+
 const step = (now: number) => {
   renderDocumentary(now);
   const frame = frameAt(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
   state.displayed = frame.camera;
   render(frame);
   renderNarration(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
+  arrange(frame.time);
   tickAutoplay(now);
   if (pinned || (hovered && !tooltip.hidden)) {
     // Keep the tooltip attached while the camera moves.
@@ -2629,6 +2824,9 @@ const loop = (now: number) => {
 
 const relayout = () => {
   measure();
+  measureChrome();
+  extents = new WeakMap();
+  labelWidths.clear();
   renderDocumentary(clock());
 };
 
@@ -2639,6 +2837,8 @@ const applyScheme = () => {
 
 applyScheme();
 relayout();
+// The tour's timeline depends on the narration's, which needs the measured screen.
+if (state.tour.on) state.tour.base = tourStart(state.step);
 showCard(initial, 0);
 updateChrome();
 requestAnimationFrame(loop);
