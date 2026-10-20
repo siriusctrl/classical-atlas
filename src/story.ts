@@ -62,6 +62,8 @@ export type Step = {
   // Side changes in this step spread outward from one place.
   ripple?: { from: PlaceId; start: number; span: number };
   marks?: Mark[];
+  // "all" keeps every city at full strength; otherwise places outside the step recede.
+  focus?: "all";
   // Several insets play in sequence, each from its own start.
   inset?: Inset | Inset[];
   // Details along the way: pins in free reading, a guided camera tour in autoplay.
@@ -151,6 +153,7 @@ export const steps: Step[] = [
       "一边的力量在海上，一边在陆上。要看懂这场战争，先要看懂这两座城各自靠什么活着，又各自害怕什么。",
     ],
     camera: aegean,
+    focus: "all",
     beats: [
       {
         at: "corinth",
@@ -849,6 +852,7 @@ export const steps: Step[] = [
       `公元前 411 年，雅典的民主一度被“四百人”寡头政权推翻${tc("8.63 – 70")}。`,
     ],
     camera: { at: [26.0, 38.4], zoom: 2.2 },
+    focus: "all",
     beats: [
       {
         at: "sardis",
@@ -871,6 +875,7 @@ export const steps: Step[] = [
       "此后七年的故事，要从另一位雅典人色诺芬的《希腊史》里接着读。",
     ],
     camera: aegean,
+    focus: "all",
     labels: ["athens", "sparta"],
     inset: {
       type: "image",
@@ -984,6 +989,7 @@ export const steps: Step[] = [
       `吕山德把俘获的雅典人一律遣返雅典，不许他们去别处。他知道，城里的人越多，粮食耗尽得就越快${xen("2.2.2")}。`,
     ],
     camera: aegean,
+    focus: "all",
     beats: [
       {
         at: "samos",

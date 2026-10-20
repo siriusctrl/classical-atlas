@@ -260,9 +260,13 @@ const drawBase = (s: number, ox: number, oy: number) => {
 const textLayer = svgElement("g", {}, svg);
 const traceLayer = svgElement("g", {}, svg);
 const wallLayer = svgElement("g", {}, svg);
-const markLayer = svgElement("g", {}, svg);
+// Draw order, bottom to top: ground marks (routes, fields), city dots, the moving subjects
+// (ships, arrowheads, bursts), then every piece of text, then the tour pins.
+const markUnderLayer = svgElement("g", {}, svg);
 const placeLayer = svgElement("g", {}, svg);
+const markOverLayer = svgElement("g", {}, svg);
 const effectLayer = svgElement("g", {}, svg);
+const labelLayer = svgElement("g", {}, svg);
 const beatLayer = svgElement("g", {}, svg);
 
 // ---------- Projection helpers per frame ----------
@@ -396,26 +400,33 @@ type Renderer = (f: number, alpha: number, time: number) => void;
 
 const shipNode = (parent: Element) => svgElement("path", { class: "ship-hull", d: SHIP }, parent);
 
-const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
+type MarkLayers = { under: SVGGElement; over: SVGGElement; labels: SVGGElement };
+type Box = { x: number; y: number; w: number; h: number };
+// Text that place labels must not collide with this frame (route tags).
+const labelObstacles: Box[] = [];
+
+const markRenderer = (mark: Mark, { under, over, labels }: MarkLayers): Renderer => {
   const color = () => ("side" in mark ? colors[mark.side] : colors.ink);
   switch (mark.type) {
     case "route": {
       const geometry = spline(mark.via);
+      // A pale casing lifts the line off coastlines and city dots.
+      const casing = mark.style === "band" ? undefined : svgElement("path", { class: "route-casing" }, under);
       const body = mark.style === "band"
-        ? svgElement("path", { class: "route-band" }, group)
-        : svgElement("path", { class: "route-line" }, group);
+        ? svgElement("path", { class: "route-band" }, under)
+        : svgElement("path", { class: "route-line" }, under);
       const chevrons = mark.style === "army"
-        ? Array.from({ length: 40 }, () => svgElement("path", { d: CHEVRON }, group))
+        ? Array.from({ length: 40 }, () => svgElement("path", { d: CHEVRON }, under))
         : [];
-      const head = mark.style === "army" ? svgElement("path", { d: ARROW }, group) : undefined;
-      const wallGlow = mark.style === "wall" ? svgElement("path", { class: "route-line" }, group) : undefined;
-      const ticks = mark.style === "wall" ? svgElement("path", { class: "route-line" }, group) : undefined;
-      if (wallGlow) group.insertBefore(wallGlow, body);
-      const tag = mark.tag ? svgElement("text", { class: "route-tag" }, group) : undefined;
+      const head = mark.style === "army" ? svgElement("path", { class: "route-head", d: ARROW }, over) : undefined;
+      const wallGlow = mark.style === "wall" ? svgElement("path", { class: "route-line" }, under) : undefined;
+      const ticks = mark.style === "wall" ? svgElement("path", { class: "route-line" }, under) : undefined;
+      if (wallGlow) under.insertBefore(wallGlow, casing ?? body);
+      const tag = mark.tag ? svgElement("text", { class: "route-tag" }, labels) : undefined;
       if (tag) tag.textContent = mark.tag!;
       const ships = Array.from(
         { length: mark.ships ?? (mark.style === "fleet" ? 5 : 0) },
-        () => shipNode(group),
+        () => shipNode(over),
       );
       return (f, alpha, time) => {
         const u = easeInOut(within(f, mark.draw));
@@ -426,11 +437,17 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
           set(body, "fill", color());
           set(body, "opacity", (visible * (mark.width && mark.width < 3 ? 0.9 : 0.42)).toFixed(3));
         } else {
+          const lineWidth = mark.style === "army" ? 2.4 : mark.style === "wall" ? mark.width ?? 3.2 : 1.8;
           set(body, "d", pathData(drawn));
           set(body, "stroke", color());
-          set(body, "stroke-width", mark.style === "army" ? 2.4 : mark.style === "wall" ? mark.width ?? 3.2 : 1.6);
+          set(body, "stroke-width", lineWidth);
           set(body, "stroke-dasharray", mark.style === "fleet" ? "1 4" : "none");
-          set(body, "opacity", (visible * (mark.style === "wall" ? 1 : 0.85)).toFixed(3));
+          set(body, "opacity", (visible * (mark.style === "wall" ? 1 : 0.9)).toFixed(3));
+          if (casing) {
+            set(casing, "d", pathData(drawn));
+            set(casing, "stroke-width", lineWidth + 4);
+            set(casing, "opacity", (visible * 0.75).toFixed(3));
+          }
         }
         if (wallGlow && ticks) {
           set(wallGlow, "d", pathData(drawn));
@@ -468,7 +485,14 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
           set(tag, "y", fixed(lead.y - Math.cos(radians) * 17 * side + 4));
           set(tag, "text-anchor", "middle");
           set(tag, "fill", color());
-          set(tag, "opacity", (visible * smooth(u * 8)).toFixed(3));
+          const tagAlpha = visible * smooth(u * 8);
+          set(tag, "opacity", tagAlpha.toFixed(3));
+          if (tagAlpha > 0.05) {
+            const width = mark.tag!.length * 12.5;
+            const tx = lead.x + Math.sin(radians) * 17 * side;
+            const ty = lead.y - Math.cos(radians) * 17 * side + 4;
+            labelObstacles.push({ x: tx - width / 2, y: ty - 12, w: width, h: 15 });
+          }
         }
         const length = screenLength(geometry);
         // Marching chevrons: spaced along the drawn line, sliding forward as it grows.
@@ -503,8 +527,8 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
       };
     }
     case "pulse": {
-      const rings = [0, 1].map(() => svgElement("circle", { fill: "none" }, group));
-      const rays = Array.from({ length: 10 }, () => svgElement("line", { "stroke-linecap": "round" }, group));
+      const rings = [0, 1].map(() => svgElement("circle", { fill: "none" }, over));
+      const rays = Array.from({ length: 10 }, () => svgElement("line", { "stroke-linecap": "round" }, over));
       const center = toWorld(mark.place);
       return (f, alpha) => {
         const u = within(f, mark.at);
@@ -536,7 +560,7 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
     }
     case "blockade": {
       const count = 14;
-      const ships = Array.from({ length: count }, () => shipNode(group));
+      const ships = Array.from({ length: count }, () => shipNode(over));
       const [cx, cy] = toWorld(mark.place);
       return (f, alpha, time) => {
         const u = within(f, mark.at);
@@ -562,7 +586,7 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
         const angle = random() * Math.PI * 2;
         const reach = Math.sqrt(random()) * mark.radius;
         const at: XY = [center[0] + Math.cos(angle) * reach, center[1] + Math.sin(angle) * reach * 0.8];
-        return { at, size: 1.3 + random() * 1.5, turn: random() * 60 - 30, rect: svgElement("rect", {}, group), ember: svgElement("circle", {}, group) };
+        return { at, size: 1.3 + random() * 1.5, turn: random() * 60 - 30, rect: svgElement("rect", {}, under), ember: svgElement("circle", {}, under) };
       });
       const far = Math.max(...plots.map(({ at }) => Math.hypot(at[0] - origin[0], at[1] - origin[1])));
       return (f, alpha) => {
@@ -591,7 +615,7 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
     }
     case "flow": {
       const geometry = spline(mark.via);
-      const coins = Array.from({ length: 12 }, () => svgElement("circle", { r: 3.4 }, group));
+      const coins = Array.from({ length: 12 }, () => svgElement("circle", { r: 3.4 }, over));
       return (f, alpha, time) => {
         const u = within(f, mark.at);
         const envelope = smooth(u * 5) * alpha;
@@ -610,9 +634,13 @@ const markRenderer = (mark: Mark, group: SVGGElement): Renderer => {
 };
 
 const stepGroups = steps.map((step) => {
-  const group = svgElement("g", { display: "none" }, markLayer);
-  const renderers = (step.marks ?? []).map((mark) => markRenderer(mark, group));
-  return { group, renderers };
+  const layers: MarkLayers = {
+    under: svgElement("g", { display: "none" }, markUnderLayer),
+    over: svgElement("g", { display: "none" }, markOverLayer),
+    labels: svgElement("g", { display: "none" }, labelLayer),
+  };
+  const renderers = (step.marks ?? []).map((mark) => markRenderer(mark, layers));
+  return { groups: Object.values(layers), renderers };
 });
 
 // Routes that leave a faint trace for the rest of the story.
@@ -713,7 +741,7 @@ const placeNodes = placeIds.map((id) => {
   const ripple = svgElement("circle", { fill: "none", "stroke-width": 1.5 }, group);
   const ring = major ? svgElement("circle", { fill: "none", "stroke-width": 1.3 }, group) : undefined;
   const dot = svgElement("circle", { "stroke-width": 1.6 }, group);
-  const label = svgElement("text", { class: `place-label${major ? " is-major" : ""}` }, group);
+  const label = svgElement("text", { class: `place-label${major ? " is-major" : ""}` }, labelLayer);
   label.textContent = place.name;
   const direction = place.label ?? "e";
   const gap = major ? 14 : 9;
@@ -737,9 +765,34 @@ const colorOf = (side: Side | "ruined") => (side === "ruined" ? colors.land : co
 
 let hovered: PlaceId | undefined;
 
+// Each step's subject: places it labels, moves through, tours, or changes. Everything else
+// recedes so the subject reads first. Steps about the whole balance of power keep all.
+const focusAt = steps.map((step, index): Set<PlaceId> | "all" => {
+  if (step.focus === "all" || step.quote || index === 0) return "all";
+  const ids = new Set<PlaceId>(step.labels ?? []);
+  for (const mark of step.marks ?? []) {
+    if ("place" in mark) ids.add(mark.place);
+    if ("via" in mark) for (const point of mark.via) if (typeof point === "string") ids.add(point);
+  }
+  for (const beat of step.beats ?? []) if (typeof beat.at === "string") ids.add(beat.at);
+  for (const [id, entries] of Object.entries(allegiance) as [PlaceId, [string, unknown][]][]) {
+    if (entries.some(([stepId], order) => order > 0 && stepId === step.id)) ids.add(id);
+  }
+  return ids;
+});
+const RECEDE = 0.32;
+const focusWeight = (index: number | undefined, id: PlaceId) => {
+  if (index === undefined) return 1;
+  const focus = focusAt[index];
+  return focus === "all" || focus.has(id) ? 1 : RECEDE;
+};
+
+type LabelCandidate = { node: (typeof placeNodes)[number]; alpha: number; priority: number; box: Box };
+
 const renderPlaces = (frame: Frame, dimmed: number) => {
   const { P, step, previous: lastStep, enter, leave } = frame;
   glows.length = 0;
+  const candidates: LabelCandidate[] = [];
   for (const node of placeNodes) {
     let presence = 0;
     let fill = colors.neutral;
@@ -782,6 +835,9 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     const alpha = Math.max(presence > 0 ? 1 : 0, labelAlpha);
     const pop = presence > 0 ? backOut(presence) : labelAlpha;
     const radius = (node.major ? 6 : 4.2) * pop * (isHovered ? 1.45 : 1);
+    const focus = isHovered ? 1 : lastStep === undefined
+      ? focusWeight(step, node.id)
+      : focusWeight(lastStep, node.id) + (focusWeight(step, node.id) - focusWeight(lastStep, node.id)) * smooth(enter);
     node.screen = [x, y];
     node.visible = alpha * (1 - dimmed);
     set(node.dot, "cx", fixed(x));
@@ -789,13 +845,13 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     set(node.dot, "r", Math.max(radius, 0).toFixed(2));
     set(node.dot, "fill", fill);
     set(node.dot, "stroke", stroke);
-    set(node.dot, "opacity", (alpha * (1 - dimmed * 0.6)).toFixed(3));
+    set(node.dot, "opacity", (alpha * focus * (1 - dimmed * 0.6)).toFixed(3));
     if (node.ring) {
       set(node.ring, "cx", fixed(x));
       set(node.ring, "cy", fixed(y));
       set(node.ring, "r", (11 * pop).toFixed(2));
       set(node.ring, "stroke", fill);
-      set(node.ring, "opacity", (alpha * 0.7 * (1 - dimmed)).toFixed(3));
+      set(node.ring, "opacity", (alpha * 0.7 * focus * (1 - dimmed)).toFixed(3));
     }
 
     // A ring spreads whenever a city appears or changes hands.
@@ -816,7 +872,8 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       r: glowRadius * (0.4 + 0.6 * smooth(presence)),
       color: fill,
       alpha: glowZoom * smooth(presence) * (1 - ruined)
-        * (node.changes[0]?.side === "neutral" && fill === colors.neutral ? 0.35 : 1) * (1 - dimmed * 0.5),
+        * (node.changes[0]?.side === "neutral" && fill === colors.neutral ? 0.35 : 1) * (1 - dimmed * 0.5)
+        * focus * focus,
     });
 
     node.debris.forEach((piece, pieceIndex) => {
@@ -829,9 +886,33 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       set(piece, "opacity", ruined > 0 && ruined < 1 ? ((1 - ruined) * 0.8).toFixed(3) : "0");
     });
 
-    set(node.label, "x", fixed(x + node.offset[0]));
-    set(node.label, "y", fixed(y + node.offset[1]));
-    set(node.label, "opacity", labelAlpha.toFixed(3));
+    const lx = x + node.offset[0];
+    const ly = y + node.offset[1];
+    set(node.label, "x", fixed(lx));
+    set(node.label, "y", fixed(ly));
+    if (labelAlpha > 0.02) {
+      const size = node.major ? 15 : 13;
+      const width = places[node.id].name.length * size * (node.major ? 1.1 : 1) + 4;
+      const left = node.offset[0] > 0 ? lx : node.offset[0] < 0 ? lx - width : lx - width / 2;
+      candidates.push({
+        node,
+        alpha: labelAlpha,
+        priority: (isHovered ? 8 : 0) + (here ? 4 : 0) + (node.major ? 2 : 0) + focus,
+        box: { x: left - 2, y: ly - size, w: width + 4, h: size + 5 },
+      });
+    } else {
+      set(node.label, "opacity", "0");
+    }
+  }
+
+  // Labels never overlap: the most important claims its space first, lesser ones give way.
+  const placed: Box[] = [...labelObstacles];
+  const overlaps = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  candidates.sort((a, b) => b.priority - a.priority);
+  for (const candidate of candidates) {
+    const clear = !placed.some((box) => overlaps(box, candidate.box));
+    if (clear) placed.push(candidate.box);
+    set(candidate.node.label, "opacity", (clear ? candidate.alpha : 0).toFixed(3));
   }
 };
 
@@ -1157,10 +1238,11 @@ const render = (frame: Frame) => {
     lastFilter = filter;
   }
 
-  stepGroups.forEach(({ group, renderers }, index) => {
+  labelObstacles.length = 0;
+  stepGroups.forEach(({ groups, renderers }, index) => {
     const current = index === step;
     const outgoing = index === previous && index !== step && fade < 1;
-    set(group, "display", current || outgoing ? "inline" : "none");
+    for (const group of groups) set(group, "display", current || outgoing ? "inline" : "none");
     if (current) renderers.forEach((draw) => draw(f, 1, time));
     else if (outgoing) renderers.forEach((draw) => draw(1, 1 - fade, time));
   });

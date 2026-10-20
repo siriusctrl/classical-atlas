@@ -146,6 +146,20 @@ body {
   stroke-linejoin: round;
 }
 
+.route-casing {
+  fill: none;
+  stroke: var(--land);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.route-head {
+  stroke: var(--land);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
 .route-trace {
   fill: none;
   stroke-width: 1.2;
