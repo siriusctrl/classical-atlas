@@ -216,6 +216,51 @@ body {
   text-align: right;
 }
 
+.tally {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-family: var(--serif);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 10px var(--sea), 0 0 3px var(--sea);
+  transition: opacity 400ms;
+}
+
+.tally-side i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 0;
+}
+
+.tally-side.is-athens i {
+  background: var(--athens);
+}
+
+.tally-side.is-sparta i {
+  background: var(--sparta);
+}
+
+.tally-side b {
+  margin-left: 2px;
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.tally-note {
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .year {
   display: flex;
   justify-content: flex-end;
@@ -847,6 +892,11 @@ body {
   margin-bottom: 0;
 }
 
+.card strong {
+  color: var(--sparta);
+  font-weight: 800;
+}
+
 .card cite,
 .tooltip cite {
   margin-left: 2px;
@@ -988,6 +1038,40 @@ body {
   margin: 18px 0 0;
   color: rgb(244 239 227 / 72%);
   font-size: 15px;
+}
+
+/* Act titles */
+
+.act {
+  width: min(760px, 100%);
+  color: #f4efe3;
+  text-align: center;
+}
+
+.act-label {
+  display: inline-block;
+  margin-bottom: 18px;
+  padding: 5px 14px;
+  border: 1px solid rgb(244 239 227 / 35%);
+  border-radius: 999px;
+  color: rgb(244 239 227 / 78%);
+  font-size: 13px;
+  letter-spacing: 0.4em;
+}
+
+.act-title {
+  margin: 0 0 22px;
+  font-size: 60px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.act-line {
+  margin: 0 auto;
+  max-width: 560px;
+  color: rgb(244 239 227 / 82%);
+  font-size: 19px;
+  line-height: 1.8;
 }
 
 /* Legend */
@@ -1516,6 +1600,14 @@ body {
     font-size: 24px;
   }
 
+  .act-title {
+    font-size: 40px;
+  }
+
+  .act-line {
+    font-size: 16px;
+  }
+
   .controls {
     left: 10px;
     right: 10px;
@@ -1550,6 +1642,19 @@ body {
 
   .year-number {
     font-size: 38px;
+  }
+
+  .tally {
+    gap: 10px;
+    margin-bottom: 2px;
+  }
+
+  .tally-side b {
+    font-size: 17px;
+  }
+
+  .tally-note {
+    display: none;
   }
 
   .year-era {

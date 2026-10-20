@@ -108,6 +108,9 @@ const tooltip = document.querySelector<HTMLElement>(".tooltip")!;
 const callout = document.querySelector<HTMLElement>(".callout")!;
 const recenter = document.querySelector<HTMLButtonElement>(".recenter")!;
 const series = document.querySelector<HTMLElement>(".masthead-series")!;
+const tally = document.querySelector<HTMLElement>(".tally")!;
+const tallyAthens = document.querySelector<HTMLElement>(".tally-athens")!;
+const tallySparta = document.querySelector<HTMLElement>(".tally-sparta")!;
 
 const layout = { width: 0, height: 0, mobile: false, fit: 1, stage: { x: 0, y: 0, w: 0, h: 0 } };
 
@@ -768,7 +771,7 @@ let hovered: PlaceId | undefined;
 // Each step's subject: places it labels, moves through, tours, or changes. Everything else
 // recedes so the subject reads first. Steps about the whole balance of power keep all.
 const focusAt = steps.map((step, index): Set<PlaceId> | "all" => {
-  if (step.focus === "all" || step.quote || index === 0) return "all";
+  if (step.focus === "all" || step.quote || step.act || index === 0) return "all";
   const ids = new Set<PlaceId>(step.labels ?? []);
   for (const mark of step.marks ?? []) {
     if ("place" in mark) ids.add(mark.place);
@@ -793,6 +796,8 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
   const { P, step, previous: lastStep, enter, leave } = frame;
   glows.length = 0;
   const candidates: LabelCandidate[] = [];
+  // The score of the war as the map shows it: cities currently on each side.
+  const count = { athens: 0, sparta: 0 };
   for (const node of placeNodes) {
     let presence = 0;
     let fill = colors.neutral;
@@ -830,6 +835,7 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       isHovered ? 1 : 0,
     ) * (1 - dimmed);
     node.side = latest?.side;
+    if (presence >= 0.5 && (latest?.side === "athens" || latest?.side === "sparta")) count[latest.side] += 1;
 
     const [x, y] = screen(node.world);
     const alpha = Math.max(presence > 0 ? 1 : 0, labelAlpha);
@@ -904,6 +910,10 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       set(node.label, "opacity", "0");
     }
   }
+
+  if (tallyAthens.textContent !== String(count.athens)) tallyAthens.textContent = String(count.athens);
+  if (tallySparta.textContent !== String(count.sparta)) tallySparta.textContent = String(count.sparta);
+  tally.style.opacity = (count.athens + count.sparta > 0 ? 1 - dimmed : 0).toFixed(3);
 
   // Labels never overlap: the most important claims its space first, lesser ones give way.
   const placed: Box[] = [...labelObstacles];
@@ -1214,7 +1224,12 @@ type Frame = {
 let lastFilter = "";
 
 const dimFor = (index: number | undefined) =>
-  index === undefined ? 0 : index === 0 ? 0.82 : steps[index].quote ? 0.92 : 0;
+  index === undefined ? 0
+    : index === 0 ? 0.82
+    : steps[index].quote ? 0.92
+    : steps[index].act ? 0.86
+    : steps[index].mood === "night" ? 0.62
+    : 0;
 
 const render = (frame: Frame) => {
   const { camera, step, previous, f, P, enter, leave, time } = frame;
@@ -1327,6 +1342,9 @@ const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
 
 // ---------- Story text ----------
 
+// Full-screen interludes (quotations and act titles) share the dimmed, centred layout.
+const isInterlude = (index: number) => Boolean(steps[index].quote || steps[index].act);
+
 const roman = (value: number) => {
   const table: [number, string][] = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
   let rest = value;
@@ -1342,22 +1360,30 @@ const roman = (value: number) => {
 
 // Chapter numbers skip the title and the quotations.
 let chapterCount = 0;
-const chapterOf = steps.map((step, index) => (index === 0 || step.quote ? undefined : ++chapterCount));
+const chapterOf = steps.map((step, index) =>
+  (index === 0 || step.quote || step.act || step.mood === "night" ? undefined : ++chapterCount));
 const plainText = (html: string) => html.replace(/<cite>.*?<\/cite>/g, "").replace(/<[^>]+>/g, "");
 
 // How long autoplay holds a step at 1×: enough to read it, never shorter than its animation.
 const readingSeconds = (index: number) => {
   const step = steps[index];
   if (step.quote) return 3.5 + plainText(step.quote.text + (step.quote.note ?? "")).length / 5;
+  if (step.act) return 3.5 + plainText(step.act.line).length / 6;
   if (index === 0) return 9;
   return Math.max(ANIMATION_SECONDS + 1.5, 2 + plainText(step.body.join("")).length / 8);
 };
 
 const stepLabel = (index: number) =>
-  index === 0 ? "序" : steps[index].quote ? "引文" : roman(chapterOf[index]!);
+  index === 0 ? "序"
+    : steps[index].quote ? "引文"
+    : steps[index].act ? steps[index].act!.label
+    : steps[index].mood === "night" ? "楔子"
+    : roman(chapterOf[index]!);
 
 const stepTitle = (index: number) =>
-  steps[index].quote ? `“${plainText(steps[index].quote!.text).slice(0, 18)}…”` : steps[index].title;
+  steps[index].quote ? `“${plainText(steps[index].quote!.text).slice(0, 18)}…”`
+    : steps[index].act ? steps[index].act!.title
+    : steps[index].title;
 
 const legendHTML = `<div class="legend">
   <span style="--swatch: var(--athens)">雅典与盟邦</span>
@@ -1370,6 +1396,13 @@ const legendHTML = `<div class="legend">
 const cardElement = (index: number) => {
   const step = steps[index];
   const element = document.createElement("article");
+  if (step.act) {
+    element.className = "act";
+    element.innerHTML = `<div class="act-label">${step.act.label}</div>
+      <h2 class="act-title">${step.act.title}</h2>
+      <p class="act-line">${step.act.line}</p>`;
+    return element;
+  }
   if (step.quote) {
     element.className = "quote";
     element.innerHTML = `<span class="quote-mark" aria-hidden="true">“</span>
@@ -1378,8 +1411,8 @@ const cardElement = (index: number) => {
       ${step.quote.note ? `<p class="quote-note">${step.quote.note}</p>` : ""}`;
     return element;
   }
-  element.className = `card${index === 0 ? " is-opening" : ""}`;
-  element.innerHTML = `${index === 0 ? "" : `<span class="card-index">${stepLabel(index)}</span>`}
+  element.className = `card${index === 0 || step.mood === "night" ? " is-opening" : ""}`;
+  element.innerHTML = `${index === 0 || step.mood === "night" ? "" : `<span class="card-index">${stepLabel(index)}</span>`}
     <p class="card-kicker">${step.kicker}</p>
     <h2>${step.title}</h2>
     ${step.body.map((paragraph) => `<p>${paragraph}</p>`).join("")}
@@ -1402,9 +1435,9 @@ const showCard = (index: number, direction: number) => {
   }
   const element = cardElement(index);
   element.style.setProperty("--shift", `${direction * 22}px`);
-  (steps[index].quote ? quoteLayer : panel).append(element);
-  panel.classList.toggle("is-opening", index === 0);
-  panel.classList.toggle("is-quote", Boolean(steps[index].quote));
+  (isInterlude(index) ? quoteLayer : panel).append(element);
+  panel.classList.toggle("is-opening", index === 0 || steps[index].mood === "night");
+  panel.classList.toggle("is-quote", isInterlude(index));
   requestAnimationFrame(() => requestAnimationFrame(() => element.classList.add("is-active")));
   element.querySelector(".begin")?.addEventListener("click", () => {
     setPlaying(true);
@@ -1416,7 +1449,7 @@ const showCard = (index: number, direction: number) => {
 // ---------- Chapters strip ----------
 
 chapters.innerHTML = steps.map((step, index) =>
-  `<button class="chapter${step.quote ? " is-quote" : ""}" type="button" role="tab" data-step="${index}" aria-label="${stepLabel(index)} ${plainText(stepTitle(index))}"><span class="chapter-tip">${stepLabel(index)} · ${stepTitle(index)}</span></button>`,
+  `<button class="chapter${step.quote || step.act ? " is-quote" : ""}" type="button" role="tab" data-step="${index}" aria-label="${stepLabel(index)} ${plainText(stepTitle(index))}"><span class="chapter-tip">${stepLabel(index)} · ${stepTitle(index)}</span></button>`,
 ).join("");
 const chapterButtons = [...chapters.querySelectorAll<HTMLButtonElement>(".chapter")];
 chapterButtons.forEach((button, index) => button.addEventListener("click", () => goTo(index)));
@@ -1841,7 +1874,7 @@ const hitTest = (x: number, y: number, radius: number) => {
 // Steps a place takes part in, for the tooltip's jump links.
 const appearances = new Map<PlaceId, number[]>();
 steps.forEach((step, index) => {
-  if (index === 0 || step.quote) return;
+  if (index === 0 || step.quote || step.act) return;
   const ids = new Set<PlaceId>(step.labels ?? []);
   for (const mark of step.marks ?? []) {
     if ("place" in mark) ids.add(mark.place);
