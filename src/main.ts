@@ -1228,7 +1228,7 @@ const dimFor = (index: number | undefined) =>
     : index === 0 ? 0.82
     : steps[index].quote ? 0.92
     : steps[index].act ? 0.86
-    : steps[index].mood === "night" ? 0.62
+    : steps[index].mood === "night" ? 0.52
     : 0;
 
 const render = (frame: Frame) => {
