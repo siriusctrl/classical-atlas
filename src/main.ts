@@ -216,8 +216,11 @@ const withAlpha = (color: string, alpha: number) => {
   return `rgba(${channels.join(",")},${clamp01(alpha).toFixed(3)})`;
 };
 
-const drawBase = (s: number, ox: number, oy: number) => {
-  const key = `${ox.toFixed(2)}|${oy.toFixed(2)}|${s.toFixed(5)}|${glows.map((glow) =>
+type Spotlight = { x: number; y: number; strength: number };
+
+const drawBase = (s: number, ox: number, oy: number, light: Spotlight | undefined) => {
+  const lightKey = light && light.strength > 0.01 ? `${light.x.toFixed(0)},${light.y.toFixed(0)},${light.strength.toFixed(2)}` : "";
+  const key = `${ox.toFixed(2)}|${oy.toFixed(2)}|${s.toFixed(5)}|${lightKey}|${glows.map((glow) =>
     `${glow.x.toFixed(0)},${glow.y.toFixed(0)},${glow.r.toFixed(0)},${glow.color},${glow.alpha.toFixed(2)}`).join(";")}`;
   if (key === baseKey) return;
   baseKey = key;
@@ -264,6 +267,18 @@ const drawBase = (s: number, ox: number, oy: number) => {
     gradient.addColorStop(1, withAlpha(glow.color, 0));
     context.fillStyle = gradient;
     context.fillRect(glow.x - glow.r, glow.y - glow.r, glow.r * 2, glow.r * 2);
+  }
+  // The spotlight: the frame darkens slightly away from where the eye should be.
+  if (lightKey) {
+    const reach = Math.hypot(width, height) * 0.6;
+    const vignette = context.createRadialGradient(light!.x, light!.y, 0, light!.x, light!.y, reach);
+    const shade = darkLook() ? "#000000" : colors["land-shadow"];
+    vignette.addColorStop(0, withAlpha(shade, 0));
+    vignette.addColorStop(0.28, withAlpha(shade, 0));
+    vignette.addColorStop(1, withAlpha(shade, (darkLook() ? 0.32 : 0.2) * light!.strength));
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = vignette;
+    context.fillRect(0, 0, width, height);
   }
   context.globalCompositeOperation = darkLook() ? "soft-light" : "multiply";
   context.globalAlpha = 0.55;
@@ -318,9 +333,9 @@ const zoomBand = (text: MapText) => {
   return smooth((zoomNow - low * 0.8) / (low * 0.35)) * (1 - smooth((zoomNow - high) / (high * 0.4)));
 };
 
-const renderMapTexts = (dimmed: number) => {
+const renderMapTexts = (dimmed: number, receded: number) => {
   for (const { text, group, world: at } of mapTexts) {
-    const alpha = zoomBand(text) * (1 - dimmed);
+    const alpha = zoomBand(text) * (1 - dimmed) * (1 - 0.6 * receded);
     const [x, y] = screen(at);
     set(group, "opacity", alpha.toFixed(3));
     set(group, "transform", `translate(${fixed(x)},${fixed(y)})${text.rotate ? ` rotate(${text.rotate})` : ""}`);
@@ -796,11 +811,77 @@ const focusAt = steps.map((step, index): Set<PlaceId> | "all" => {
   }
   return ids;
 });
-const RECEDE = 0.32;
+// Outside the subject, cities all but disappear; Athens and Sparta stay faintly as bearings.
+const RECEDE = 0.05;
+const RECEDE_MAJOR = 0.3;
 const focusWeight = (index: number | undefined, id: PlaceId) => {
   if (index === undefined) return 1;
   const focus = focusAt[index];
-  return focus === "all" || focus.has(id) ? 1 : RECEDE;
+  if (focus === "all" || focus.has(id)) return 1;
+  return id === "athens" || id === "sparta" ? RECEDE_MAJOR : RECEDE;
+};
+
+// ---------- Attention director ----------
+
+// Where each city a route passes sits along it, so the city lights up when the route's head
+// reaches it instead of being on screen before anything happens there. Stops are the route's
+// named places plus any city of the step's subject lying on the line.
+type RouteMark = Extract<Mark, { type: "route" }>;
+const routeGeometries = steps.map((step) =>
+  (step.marks ?? []).flatMap((mark) => (mark.type === "route" ? [{ mark, geometry: spline(mark.via) }] : [])));
+const NEAR_ROUTE = Math.hypot(...[0, 1].map((axis) => toWorld([24.12, 38])[axis] - toWorld([24, 38])[axis]));
+const routeStops = routeGeometries.map((routes, index) => routes.flatMap(({ mark, geometry }) => {
+  const focus = focusAt[index];
+  const named = mark.via.filter((point): point is PlaceId => typeof point === "string");
+  const ids = new Set([...named, ...(focus === "all" ? [] : focus)]);
+  return [...ids].flatMap((id) => {
+    const [px, py] = toWorld(id);
+    let nearest = 0;
+    let distance = Infinity;
+    geometry.points.forEach(([x, y], order) => {
+      const d = Math.hypot(x - px, y - py);
+      if (d < distance) [nearest, distance] = [order, d];
+    });
+    return named.includes(id) || distance < NEAR_ROUTE
+      ? [{ id, at: geometry.lengths[nearest] / geometry.total, mark }]
+      : [];
+  });
+}));
+const routeProgress = (mark: RouteMark, f: number) => easeInOut(within(f, mark.draw));
+
+// How a route's arrival reads at a city: `lit` rises to 1 as the head comes in and stays;
+// `passing` runs 0 → 1 just after the head goes by, for the swell and the ripple.
+const arrivalAt = (index: number, id: PlaceId, f: number) => {
+  let lit: number | undefined;
+  let passing = 0;
+  for (const stop of routeStops[index]) {
+    if (stop.id !== id) continue;
+    const u = routeProgress(stop.mark, f);
+    lit = Math.max(lit ?? 0, u <= 0 ? 0 : smooth((u - stop.at) / 0.05 + 1));
+    const phase = within(u - stop.at, [0, 0.1]);
+    if (u > 0 && phase > passing && (passing === 0 || phase < 1)) passing = phase;
+  }
+  return lit === undefined ? undefined : { lit, passing };
+};
+
+// The point the eye should be on: the head of a route being drawn, or the beat on tour.
+const spotlightAt = (frame: Frame) => {
+  for (const { mark, geometry } of routeGeometries[frame.step]) {
+    const u = routeProgress(mark, frame.f);
+    if (u > 0 && u < 1) {
+      const points = partial(geometry, u);
+      const [x, y] = screen(points[points.length - 1]);
+      return { x, y, strength: Math.sin(Math.PI * u) ** 0.5 };
+    }
+  }
+  if (frame.beat !== undefined && frame.touring > 0) {
+    const node = beatNodes[frame.step]?.[frame.beat];
+    if (node) {
+      const [x, y] = screen(node.world);
+      return { x, y, strength: frame.beatAppear * frame.touring };
+    }
+  }
+  return undefined;
 };
 
 type LabelCandidate = { node: (typeof placeNodes)[number]; alpha: number; priority: number; box: Box };
@@ -842,8 +923,10 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     const here = labelledAt[step].has(node.id);
     const before = lastStep !== undefined && labelledAt[lastStep].has(node.id);
     const isHovered = hovered === node.id;
+    const arrival = arrivalAt(step, node.id, frame.f);
+    const swell = arrival && arrival.passing > 0 && arrival.passing < 1 ? Math.sin(Math.PI * arrival.passing) : 0;
     const labelAlpha = Math.max(
-      here ? (before ? 1 : smooth(enter * 1.6)) : 0,
+      arrival ? (before ? 1 + (arrival.lit - 1) * smooth(enter) : arrival.lit) : here ? (before ? 1 : smooth(enter * 1.6)) : 0,
       !here && before ? 1 - smooth(leave) : 0,
       isHovered ? 1 : 0,
     ) * (1 - dimmed);
@@ -853,10 +936,13 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     const [x, y] = screen(node.world);
     const alpha = Math.max(presence > 0 ? 1 : 0, labelAlpha);
     const pop = presence > 0 ? backOut(presence) : labelAlpha;
-    const radius = (node.major ? 6 : 4.2) * pop * (isHovered ? 1.45 : 1);
-    const focus = isHovered ? 1 : lastStep === undefined
+    const radius = (node.major ? 6 : 4.2) * pop * (isHovered ? 1.45 : 1) * (1 + 0.75 * swell);
+    const settled = lastStep === undefined
       ? focusWeight(step, node.id)
       : focusWeight(lastStep, node.id) + (focusWeight(step, node.id) - focusWeight(lastStep, node.id)) * smooth(enter);
+    // Route stops wait in the background until the head reaches them.
+    const waiting = arrival ? Math.min(settled, RECEDE + (1 - RECEDE) * arrival.lit) : settled;
+    const focus = isHovered ? 1 : settled + (waiting - settled) * smooth(enter);
     node.screen = [x, y];
     node.visible = alpha * (1 - dimmed);
     set(node.dot, "cx", fixed(x));
@@ -873,8 +959,9 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       set(node.ring, "opacity", (alpha * 0.7 * focus * (1 - dimmed)).toFixed(3));
     }
 
-    // A ring spreads whenever a city appears or changes hands.
-    const echo = latest ? within(P, [latest.at, latest.at + 0.16]) : 1;
+    // A ring spreads whenever a city appears or changes hands, or a route reaches it.
+    const echo = arrival && arrival.passing > 0 && arrival.passing < 1 ? arrival.passing
+      : latest ? within(P, [latest.at, latest.at + 0.16]) : 1;
     set(node.ripple, "cx", fixed(x));
     set(node.ripple, "cy", fixed(y));
     set(node.ripple, "r", fixed(5 + easeOut(echo) * 24));
@@ -916,7 +1003,7 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
       candidates.push({
         node,
         alpha: labelAlpha,
-        priority: (isHovered ? 8 : 0) + (here ? 4 : 0) + (node.major ? 2 : 0) + focus,
+        priority: (isHovered ? 8 : 0) + (arrival && arrival.lit > 0.5 ? 6 : 0) + (here ? 4 : 0) + (node.major ? 2 : 0) + focus,
         box: { x: left - 2, y: ly - size, w: width + 4, h: size + 5 },
       });
     } else {
@@ -1284,10 +1371,12 @@ const render = (frame: Frame) => {
     set(trace.element, "opacity", (0.6 * wide * (1 - clamp01(dimmed))).toFixed(3));
   }
 
-  renderMapTexts(clamp01(dimmed));
+  // Region and sea names are bearings; when a step has a subject they step back with the cities.
+  const subject = (index: number | undefined) => (index === undefined || focusAt[index] === "all" ? 0 : 1);
+  renderMapTexts(clamp01(dimmed), previous === undefined ? subject(step) : subject(previous) + (subject(step) - subject(previous)) * smooth(enter));
   renderWalls(P);
   renderPlaces(frame, clamp01(dimmed));
-  drawBase(s, ox, oy);
+  drawBase(s, ox, oy, spotlightAt(frame));
   renderYear(frame);
   renderInset(frame);
   renderBeats(frame, clamp01(dimmed));
