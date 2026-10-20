@@ -12,7 +12,7 @@ const MIN_ISLAND_AREA = 0.6;
 const MIN_WEIGHT = 0.06;
 // The story never looks outside the core box; the margin keeps the data edge off-screen.
 const core = { west: 11.2, east: 30.6, south: 34.6, north: 42.4 };
-const margin = { west: 9, east: 8, south: 6, north: 5 };
+const margin = { west: 9, east: 8, south: 12, north: 7 };
 const bounds = {
   west: core.west - margin.west,
   east: core.east + margin.east,
@@ -61,10 +61,13 @@ const area = (points) => Math.abs(points.reduce((sum, [x, y], index) => {
   return sum + x * ny - nx * y;
 }, 0) / 2);
 rings.push(sphacteria.map((point) => projection(point)));
-const kept = rings.filter((points) => points.length > 3 && area(points) > MIN_ISLAND_AREA);
+// The clipped land can come back with the clip rectangle itself as a ring; filled even-odd
+// it would turn every coast inside out (land drawn as sea), so it is dropped.
+const isExtent = (points) => points.every(([x, y]) =>
+  (Math.abs(x - cx0) < 0.5 || Math.abs(x - cx1) < 0.5) && (Math.abs(y - cy0) < 0.5 || Math.abs(y - cy1) < 0.5));
+const kept = rings.filter((points) => points.length > 3 && area(points) > MIN_ISLAND_AREA && !isExtent(points));
 const planar = buildTopology({
-  // Rings keep their own geometry; the page fills them even-odd, so seas cut out of the
-  // clip rectangle stay open water.
+  // Rings keep their own geometry; the page fills them even-odd, so lakes stay open water.
   land: { type: "MultiPolygon", coordinates: kept.map((points) => [points]) },
 }, 1e5);
 const simplifiedTopology = simplify(presimplify(planar), MIN_WEIGHT);
