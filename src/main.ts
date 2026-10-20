@@ -2046,6 +2046,8 @@ document.fonts?.ready.then(relayout);
 (window as typeof window & { __atlas?: unknown }).__atlas = {
   steps: steps.length,
   goTo,
+  // Where a city is drawn right now, for tests that hover it.
+  placeScreen: (id: PlaceId) => placeNodes.find((node) => node.id === id)?.screen,
   // Deterministic video export: begin autoplay from a step on a virtual clock, then
   // advance it frame by frame and screenshot each frame.
   export: {
