@@ -1467,13 +1467,6 @@ const chapterOf = steps.map((step, index) =>
 const plainText = (html: string) => html.replace(/<cite>.*?<\/cite>/g, "").replace(/<[^>]+>/g, "");
 
 // How long autoplay holds a step at 1×: enough to read it, never shorter than its animation.
-const readingSeconds = (index: number) => {
-  const step = steps[index];
-  if (step.quote) return 3.5 + plainText(step.quote.text + (step.quote.note ?? "")).length / 5;
-  if (step.act) return 3.5 + plainText(step.act.line).length / 6;
-  if (index === 0) return 9;
-  return Math.max(animationSeconds(index) + 1.5, 2 + plainText(step.body.join("")).length / 8);
-};
 
 const stepLabel = (index: number) =>
   index === 0 ? "序"
@@ -1548,128 +1541,200 @@ const showCard = (index: number, direction: number) => {
   element.querySelector(".browse")?.addEventListener("click", () => goTo(1));
 };
 
-// ---------- Attention ----------
+// ---------- Attention budget ----------
 
-// How long each part of a step needs, estimated from what a viewer has to look at:
-// sentences read at a subtitle pace, a route followed by eye along its on-screen length,
-// each city that changes hands or gets a label glanced at once, each inset studied for a
-// time that depends on what it shows. Only one thing that needs reading runs at a time:
-// the camera tours the beats only after the subtitles are done.
-const READING_RATE = 7; // Chinese characters per second at subtitle pace
+// Every pause is arithmetic: what the viewer has to take in, measured in one unit — characters
+// of reading — and turned into seconds by one rate. Other kinds of information convert into
+// that unit at an exchange rate: how much reading each is worth. READING_RATE sets the pace of
+// the whole film; WORTH says how dense each kind of information is. Nothing else is timed by hand.
+const READING_RATE = 10; // characters a second: brisk silent reading of Chinese
+const WORTH = {
+  // Noticing one new thing on the map: a city lighting up, a pin, a pulse.
+  glance: 3,
+  // Reading a figure and holding on to it.
+  number: 4,
+  // Taking in a photograph, before its caption.
+  image: 12,
+  // Following a drawn line: screen pixels the eye covers in the time of one character.
+  routePixels: 40,
+  // Finding text that appears a full screen away from where the eye was.
+  refocus: 6,
+  // A quotation set as a full-screen moment is savoured, not skimmed.
+  savor: 1.6,
+};
+const seconds = (characters: number) => characters / READING_RATE / state.speed;
+const textCost = (html: string) => plainText(html).replace(/\s/g, "").length;
+
 const sentencesOf = (paragraphs: string[]) =>
   paragraphs.flatMap((paragraph) => paragraph.split(/(?<=[。？！])/))
     .map((sentence) => sentence.trim())
     .filter((sentence) => plainText(sentence).trim().length > 0);
-const sentenceSeconds = (sentence: string) => 0.8 + plainText(sentence).length / READING_RATE;
 
-const insetSeconds = (inset: Inset) => {
-  switch (inset.type) {
-    case "count": return 2.6 + plainText(inset.note ?? "").length / 9;
-    case "dots": return 3.8;
-    case "growth": return 3;
-    case "ratio": return 5;
-    case "trireme": return 7;
-    case "talent": return 7.5;
-    case "siege": return 9;
-    case "image": return 2.4 + plainText(inset.caption).length / 8;
-    case "note": return 1.5 + inset.lines.length * 1.1;
-  }
+// Places, regions and seas a sentence can be about, by name.
+const anchorNames = [
+  ...placeIds.map((id) => ({ name: places[id].name, id: id as PlaceId | undefined, world: toWorld(id) })),
+  ...mapTexts.map(({ text, world }) => ({ name: text.name.replace(/\s+/g, ""), id: undefined, world })),
+];
+// Athens and Sparta are named in most sentences; they count only when nothing else is named.
+const namedIn = (html: string) => {
+  const text = plainText(html);
+  const named = anchorNames.filter((anchor) => text.includes(anchor.name));
+  const specific = named.filter((anchor) => anchor.id !== "athens" && anchor.id !== "sparta");
+  return specific.length ? specific : named;
 };
 
-const markSeconds = (index: number, mark: Mark) => {
+// An inset is worth what it shows: measured from its own rendering — words, figures, images.
+const insetCosts = new Map<Inset, number>();
+const insetCost = (inset: Inset) => {
+  const known = insetCosts.get(inset);
+  if (known !== undefined) return known;
+  const [html, className] = [insetElement.innerHTML, insetElement.className];
+  buildInset(inset);
+  insetElement.querySelectorAll("figcaption span").forEach((credit) => credit.remove());
+  const text = insetElement.textContent ?? "";
+  const figures = text.match(/\d[\d,.]*/g)?.length ?? 0;
+  const images = insetElement.querySelectorAll("img").length;
+  [insetElement.innerHTML, insetElement.className] = [html, className];
+  insetKey = "";
+  const cost = textCost(text.replace(/\d[\d,.]*/g, "")) + figures * WORTH.number + images * WORTH.image;
+  insetCosts.set(inset, cost);
+  return cost;
+};
+
+const narrated = (index: number, id: PlaceId) => plainText(steps[index].body.join("")).includes(places[id].name);
+const screenPixels = (index: number, via: Point[]) => spline(via).total * layout.fit * steps[index].camera.zoom;
+const markCost = (index: number, mark: Mark) => {
   switch (mark.type) {
     case "route": {
-      // The eye follows a drawn line at roughly 300 px a second.
-      const pixels = spline(mark.via).total * layout.fit * steps[index].camera.zoom;
-      return 1 + Math.min(pixels / 300, 6) + (mark.tag ? 0.4 : 0);
+      // The line, the cities it lights up on the way, and its tag.
+      const stops = routeStops[index].filter((stop) => stop.mark === mark);
+      return screenPixels(index, mark.via) / WORTH.routePixels + (mark.tag ? textCost(mark.tag) : 0)
+        + stops.reduce((total, stop) => total + WORTH.glance + (narrated(index, stop.id) ? 0 : places[stop.id].name.length), 0);
     }
-    case "pulse": return 1.2;
-    case "blockade": return 2.2;
-    case "fields": return 3;
-    case "flow": return 2.5;
+    case "flow": return WORTH.glance + screenPixels(index, mark.via) / WORTH.routePixels;
+    default: return WORTH.glance;
   }
 };
+const markWindow = (mark: Mark): Span =>
+  ("draw" in mark && mark.draw) || ("at" in mark && mark.at) || ("burn" in mark && mark.burn) || [0, 1];
+const markNames = (index: number, mark: Mark) =>
+  mark.type === "route"
+    ? routeStops[index].filter((stop) => stop.mark === mark && stop.id !== "athens" && stop.id !== "sparta").map((stop) => places[stop.id].name)
+    : "place" in mark ? [places[mark.place].name] : [];
 
-const changesAt = (index: number) =>
-  Object.values(allegiance).reduce((total, entries) =>
-    total + (entries ?? []).filter(([stepId]) => stepId === steps[index].id).length, 0);
-
-let attentionKey = "";
-let animationCache: number[] = [];
-// In documentary mode the map keeps changing while the narration runs, instead of
-// finishing early and waiting on the subtitles.
-const animationSeconds = (index: number) => {
-  const base = baseAnimationSeconds(index);
-  if (!state.documentary.on) return base;
-  const subtitles = subtitlePlan(index);
-  const span = subtitles.length ? subtitles[subtitles.length - 1].end - subtitles[0].start : 0;
-  return clamp(Math.max(base, span * 0.7), 4, 30);
-};
-
-// Seconds the map animation of a step takes; its mark and inset windows stretch with it.
-const baseAnimationSeconds = (index: number) => {
-  const key = `${layout.width}x${layout.height}`;
-  if (key !== attentionKey) {
-    attentionKey = key;
-    animationCache = steps.map((step, stepIndex) => {
-      const marks = (step.marks ?? []).reduce((total, mark) => total + markSeconds(stepIndex, mark), 0);
-      const insets = insetsOf(stepIndex).reduce((total, inset) => total + insetSeconds(inset), 0);
-      const glances = Math.min(changesAt(stepIndex) * 0.12, 3) + Math.min((step.labels?.length ?? 0) * 0.25, 2.5);
-      return clamp(Math.max(2.5 + marks * 0.65 + glances, insets / 0.85), 4, 15);
+// Something the map shows during a step: when it plays (as a fraction of the step's map
+// animation), what it costs, and which sentence brings it in.
+type Visual = { kind: "mark" | "inset" | "change" | "label"; window: Span | undefined; cost: number; names: string[] };
+const visualsOf = (index: number): Visual[] => {
+  const step = steps[index];
+  const visuals: Visual[] = (step.marks ?? []).map((mark) => ({ kind: "mark" as const, window: markWindow(mark), cost: markCost(index, mark), names: markNames(index, mark) }));
+  for (const inset of insetsOf(index)) visuals.push({ kind: "inset", window: inset.at ?? [0.1, 0.6], cost: insetCost(inset), names: [] });
+  // Cities changing hands together read as one pattern, not one by one: a glance that grows
+  // with the logarithm of how many there are (Hick's law).
+  const changes = placeNodes.flatMap((node) => node.changes
+    .filter((change) => Math.floor(change.at) === index && change.at > index)
+    .map((change) => ({ at: change.at - index, name: places[node.id].name })));
+  if (changes.length) {
+    visuals.push({
+      kind: "change",
+      window: [Math.min(...changes.map((change) => change.at)), Math.max(...changes.map((change) => change.at))],
+      cost: WORTH.glance * Math.log2(1 + changes.length),
+      names: changes.map((change) => change.name),
     });
   }
-  return animationCache[index];
+  // A label is read once; a name the narration already gave is only recognised.
+  const stops = new Set(routeStops[index].map((stop) => stop.id));
+  for (const node of placeNodes) {
+    if (labelledAt[index].has(node.id) && !stops.has(node.id)) {
+      const name = places[node.id].name;
+      visuals.push({ kind: "label", window: undefined, cost: WORTH.glance + (narrated(index, node.id) ? 0 : name.length), names: [name] });
+    }
+  }
+  return visuals;
 };
 
-// Subtitles start as the camera settles (a J-cut: words lead the picture) and run one
-// sentence after another.
-const SUBTITLE_LEAD = 0.5;
-const subtitlePlan = (index: number) => {
-  const step = steps[index];
+// The step as a timeline of narration slots. Each sentence holds for its own reading, the
+// look it takes to find it, and everything on the map it brings in: what it names, or else
+// what plays at its point in the step. Slots follow each other without gaps.
+type Slot = { html: string; start: number; end: number; visuals: Visual[] };
+const SUBTITLE_LEAD = 0.35;
+const slotCache = new Map<string, Slot[]>();
+const subtitlePlan = (index: number): Slot[] => {
   if (index === 0 || isInterlude(index)) return [];
+  const key = `${index}|${state.subtitleBase}|${state.speed}|${layout.width}x${layout.height}`;
+  const cached = slotCache.get(key);
+  if (cached) return cached;
+  const step = steps[index];
+  const sentences = sentencesOf(step.body);
+  const visuals = sentences.map((): Visual[] => []);
+  for (const visual of visualsOf(index)) {
+    const named = sentences.findIndex((html) => visual.names.some((name) => plainText(html).includes(name)));
+    const order = named >= 0 ? named : visual.window ? Math.min(sentences.length - 1, Math.floor(visual.window[0] * sentences.length)) : 0;
+    visuals[order].push(visual);
+  }
+  // How far the eye has to travel to the next sentence, as a share of the screen.
+  const scale = layout.fit * step.camera.zoom;
+  const diagonal = Math.hypot(layout.width, layout.height);
+  let last: XY | undefined;
   let at = state.subtitleBase;
-  return sentencesOf(step.body).map((html) => {
-    const duration = sentenceSeconds(html) / state.speed;
-    const line = { html, start: at, end: at + duration };
-    at += duration + 0.25;
-    return line;
+  const slots = sentences.map((html, order) => {
+    const anchors = namedIn(html).map((anchor) => anchor.world);
+    const here = anchors.length
+      ? [anchors.reduce((sum, [x]) => sum + x, 0) / anchors.length, anchors.reduce((sum, [, y]) => sum + y, 0) / anchors.length] as XY
+      : last;
+    const travel = !last ? 1 : here ? Math.min(1, (Math.hypot(here[0] - last[0], here[1] - last[1]) * scale) / diagonal) : 0;
+    last = here ?? last;
+    const cost = textCost(html) + WORTH.refocus * travel + visuals[order].reduce((total, visual) => total + visual.cost, 0);
+    const slot = { html, start: at, end: at + seconds(cost), visuals: visuals[order] };
+    at = slot.end;
+    return slot;
   });
+  if (slotCache.size > 200) slotCache.clear();
+  slotCache.set(key, slots);
+  return slots;
 };
 
-// In documentary mode the map acts when the narration names it: a route starts drawing on
-// the sentence that names one of its stops and is followed for at least as long as the eye
-// needs. The rest of the step's animation stretches around those cues.
+// Full-screen moments with no narration: the title, act cards and quotations.
+const interludeCost = (index: number) => {
+  const step = steps[index];
+  if (step.quote) return textCost(step.quote.text + (step.quote.note ?? "")) * WORTH.savor;
+  if (step.act) return textCost(step.act.title + step.act.line) * WORTH.savor;
+  return textCost(step.title + step.body.join(""));
+};
+
+// The map animation runs on a fraction f of the step. In documentary mode each visual plays
+// across the slot of the sentence that brings it in; in reading mode the animation lasts as
+// long as its visuals are worth.
 type Cue = { tau: number; f: number };
 const cueCache = new Map<string, Cue[]>();
 const cuesAt = (index: number): Cue[] => {
   const start = (state.stepMs * 0.55) / 1000;
-  const total = animationSeconds(index);
-  const key = `${index}|${state.subtitleBase}|${state.speed}|${start}|${total}|${state.documentary.on}`;
+  const key = `${index}|${state.subtitleBase}|${state.speed}|${start}|${state.documentary.on}|${layout.width}x${layout.height}`;
   const cached = cueCache.get(key);
   if (cached) return cached;
-  const keys: Cue[] = [];
-  if (state.documentary.on) {
-    const lines = subtitlePlan(index);
-    for (const { mark } of routeGeometries[index]) {
-      // Athens and Sparta come up in nearly every sentence, so they do not cue a route.
-      const names = routeStops[index]
-        .filter((stop) => stop.mark === mark && stop.id !== "athens" && stop.id !== "sparta")
-        .map((stop) => places[stop.id].name);
-      const line = lines.find((candidate) => names.some((name) => plainText(candidate.html).includes(name)));
-      if (!line) continue;
-      const [from, to] = mark.draw ?? [0, 1];
-      const begin = Math.max(line.start + 0.4, start);
-      keys.push({ tau: begin, f: from }, { tau: Math.max(line.end - 0.2, begin + markSeconds(index, mark) / state.speed), f: to });
-    }
-  }
-  keys.sort((a, b) => a.f - b.f);
   const cues: Cue[] = [{ tau: start, f: 0 }];
-  for (const cue of keys) {
+  const slots = state.documentary.on ? subtitlePlan(index) : [];
+  if (slots.length) {
+    const keys: Cue[] = [];
+    for (const slot of slots) {
+      for (const visual of slot.visuals) {
+        if (!visual.window) continue;
+        const [from, to] = visual.window;
+        keys.push({ tau: Math.max(slot.start, start), f: from }, { tau: slot.end, f: Math.max(to, from) });
+      }
+    }
+    keys.sort((a, b) => a.f - b.f || a.tau - b.tau);
+    for (const cue of keys) {
+      const last = cues[cues.length - 1];
+      if (cue.f > last.f && cue.tau > last.tau) cues.push(cue);
+    }
     const last = cues[cues.length - 1];
-    if (cue.f > last.f && cue.tau > last.tau) cues.push(cue);
+    if (last.f < 1) cues.push({ tau: Math.max(last.tau, slots[slots.length - 1].end), f: 1 });
+    if (cues[cues.length - 1].tau <= cues[cues.length - 2].tau) cues[cues.length - 1].tau = cues[cues.length - 2].tau + 1e-3;
+  } else {
+    const worth = visualsOf(index).reduce((total, visual) => total + visual.cost, 0);
+    cues.push({ tau: start + seconds(Math.max(worth, WORTH.glance)), f: 1 });
   }
-  const last = cues[cues.length - 1];
-  if (last.f < 1) cues.push({ tau: Math.max(start + total, last.tau + (1 - last.f) * total * 0.6), f: 1 });
   if (cueCache.size > 200) cueCache.clear();
   cueCache.set(key, cues);
   return cues;
@@ -1727,7 +1792,6 @@ const state = {
   hoverBeat: undefined as number | undefined,
 };
 
-const FLY_SECONDS = 2.4;
 const TOUR_BEATS = 1;
 // Autoplay pushes the camera in slowly while it rests, as documentary maps do, and lets the
 // push go during the next flight so the motion never stops or jumps.
@@ -1747,31 +1811,38 @@ const beatView = (index: number, beat: Beat): ZoomView => {
 };
 
 // Find the pin after the flight, then read the callout.
-const beatHold = (beat: Beat) => 1 + (0.8 + plainText(beat.text).length / READING_RATE) / state.speed;
+const beatHold = (beat: Beat) => seconds(WORTH.glance + WORTH.refocus + textCost(beat.title + beat.text));
 
-type Segment = { path: (t: number) => ZoomView; start: number; end: number; beat?: number };
+// How long a camera flight takes is physics, not attention: van Wijk and Nuij's zoom path
+// gives a perceptual duration for the distance and zoom change, slowed for autoplay.
+const flightMs = (path: { duration: number }, cinematic: boolean) =>
+  cinematic ? clamp(path.duration * 1.35, 1800, 6000) : clamp(path.duration * 0.8, 800, 2200);
+
+type Segment = { path: ((t: number) => ZoomView) & { duration: number }; start: number; end: number; fly: number; beat?: number };
 let planKey = "";
 let plan: Segment[] = [];
 
 // The tour as a timeline: fly to each beat, hold while it reads, then fly home.
-const tourPlan = (index: number) => {
-  const key = `${index}:${state.tour.base}:${state.speed}:${state.tour.from?.join(",")}:${layout.width}x${layout.height}`;
+const tourPlan = (index: number, base = state.tour.base, start = state.tour.from) => {
+  const key = `${index}:${base}:${state.speed}:${start?.join(",")}:${layout.width}x${layout.height}`;
   if (key === planKey) return plan;
   planKey = key;
   plan = [];
   // A guided tour stops at the first beat only; the rest stay on the map as pins.
   const beats = (steps[index].beats ?? []).slice(0, TOUR_BEATS);
   if (beats.length === 0) return plan;
-  let at = state.tour.base;
-  let from = state.tour.from ?? viewOf(steps[index].camera);
+  let at = base;
+  let from = start ?? viewOf(steps[index].camera);
   beats.forEach((beat, order) => {
     const to = beatView(index, beat);
-    const end = at + FLY_SECONDS + beatHold(beat);
-    plan.push({ path: interpolateZoom(from, to), start: at, end, beat: order });
+    const path = interpolateZoom(from, to);
+    const fly = flightMs(path, true) / 1000;
+    const end = at + fly + beatHold(beat);
+    plan.push({ path, start: at, end, fly, beat: order });
     at = end;
     from = to;
   });
-  plan.push({ path: interpolateZoom(from, viewOf(steps[index].camera)), start: at, end: at + FLY_SECONDS });
+  // No flight home: the next step's camera move starts from the beat.
   return plan;
 };
 
@@ -1781,7 +1852,7 @@ const viewFromCamera = ({ x, y, scale }: { x: number; y: number; scale: number }
 // Autoplay flies slower and further-looking; reading by hand keeps moves brisk.
 const moveCamera = (to: ZoomView, now: number, cinematic = state.playing) => {
   const path = interpolateZoom(viewFromCamera(state.displayed), to);
-  const ms = cinematic ? clamp(path.duration * 1.35, 1800, 6000) : clamp(path.duration * 0.8, 800, 2200);
+  const ms = flightMs(path, cinematic);
   state.camera = { path, start: now, ms };
   return ms;
 };
@@ -1790,19 +1861,19 @@ const moveCamera = (to: ZoomView, now: number, cinematic = state.playing) => {
 // the flight that follows it.
 const driftAt = (index: number, tau: number) => {
   const segments = tourPlan(index);
-  const rests: Array<{ from: number; to: number; amount: number; release?: number }> = [];
+  const rests: Array<{ from: number; to: number; amount: number; release?: number; fly?: number }> = [];
   let from = state.stepMs / 1000;
   for (const segment of segments) {
-    rests.push({ from, to: segment.start, amount: segment === segments[0] ? DRIFT : DRIFT * 0.6, release: segment.start });
-    from = segment.start + FLY_SECONDS;
+    rests.push({ from, to: segment.start, amount: segment === segments[0] ? DRIFT : DRIFT * 0.6, release: segment.start, fly: segment.fly });
+    from = segment.start + segment.fly;
   }
   rests.push({ from, to: holdSeconds(index) + 6, amount: segments.length ? DRIFT * 0.6 : DRIFT });
-  // The last rest after a tour comes home is the step's overview again.
+  // The last rest, on the tour's final beat, holds until the next step flies on.
   if (segments.length) rests[rests.length - 1].amount = DRIFT;
   for (const rest of rests) {
     if (tau >= rest.from && tau < rest.to) return rest.amount * glide((tau - rest.from) / Math.max(rest.to - rest.from, 1));
-    if (rest.release !== undefined && tau >= rest.release && tau < rest.release + FLY_SECONDS) {
-      return rest.amount * (1 - glide((tau - rest.release) / FLY_SECONDS));
+    if (rest.release !== undefined && rest.fly && tau >= rest.release && tau < rest.release + rest.fly) {
+      return rest.amount * (1 - glide((tau - rest.release) / rest.fly));
     }
   }
   return 0;
@@ -1826,14 +1897,17 @@ const frameAt = (now: number): Frame => {
     }
     for (const segment of segments) {
       if (tau < segment.start || tau >= segment.end) continue;
-      view = segment.path(glide((tau - segment.start) / FLY_SECONDS));
+      view = segment.path(glide((tau - segment.start) / segment.fly));
       if (segment.beat !== undefined) {
         beat = segment.beat;
-        beatAppear = smooth((tau - segment.start - FLY_SECONDS * 0.75) / 0.45)
+        beatAppear = smooth((tau - segment.start - segment.fly * 0.75) / 0.45)
           * (1 - smooth((tau - segment.end + 0.4) / 0.4));
       }
       break;
     }
+    // The tour ends at its last beat; the camera stays there until the next step flies on.
+    const lastSegment = segments[segments.length - 1];
+    if (lastSegment && tau >= lastSegment.end) view = lastSegment.path(1);
   }
   // A slow push-in while the title holds, and the autoplay drift elsewhere.
   const push = state.step === 0
@@ -1966,22 +2040,22 @@ function setPlaying(value: boolean) {
   document.body.classList.toggle("is-playing", state.playing);
 }
 
-// The tour waits for both the map animation and the subtitles.
+// The tour waits for both the map animation and the narration.
 function tourStart(index: number) {
-  const animationEnd = animationTime(index, 0.92);
-  const subtitles = subtitlePlan(index);
-  return Math.max(animationEnd, subtitles.length ? subtitles[subtitles.length - 1].end + 0.4 : 0);
+  const slots = subtitlePlan(index);
+  return Math.max(animationTime(index, 1), slots.length ? slots[slots.length - 1].end : 0);
 }
 
-const holdSeconds = (index: number) => {
+// A step holds until everything it shows has been taken in.
+const holdSeconds = (index: number, base = state.tour.base, from = state.tour.from) => {
   const animationStart = (state.stepMs * 0.55) / 1000;
-  const tour = tourPlan(index);
-  const subtitles = subtitlePlan(index);
+  const tour = state.tour.on ? tourPlan(index, base, from) : [];
+  const slots = subtitlePlan(index);
   return Math.max(
-    animationTime(index, 1) + 0.8,
-    isInterlude(index) || index === 0 ? animationStart + readingSeconds(index) / state.speed : 0,
-    subtitles.length ? subtitles[subtitles.length - 1].end + 0.6 : 0,
-    tour.length ? tour[tour.length - 1].end + 0.4 : 0,
+    animationTime(index, 1),
+    isInterlude(index) || index === 0 ? animationStart + seconds(interludeCost(index)) : 0,
+    slots.length ? slots[slots.length - 1].end : 0,
+    tour.length ? tour[tour.length - 1].end : 0,
   );
 };
 
@@ -2354,10 +2428,6 @@ const narration = document.querySelector<HTMLElement>(".narration")!;
 type Caption = { key: string; step: number; element: HTMLElement; world: XY; start: number; end: number; alpha: number };
 let captions: Caption[] = [];
 
-const anchorNames = [
-  ...placeIds.map((id) => ({ name: places[id].name, id: id as PlaceId | undefined, world: toWorld(id) })),
-  ...mapTexts.map(({ text, world }) => ({ name: text.name.replace(/\s+/g, ""), id: undefined, world })),
-];
 
 // The story camera at rest in this step: where captions are placed and drawn, so a caption
 // waits at its spot while the camera is still landing.
@@ -2484,15 +2554,9 @@ const renderNarration = (now: number) => {
     narration.append(element);
     const size = { w: element.offsetWidth, h: element.offsetHeight };
 
-    const text = plainText(line.html);
-    const frame = { x: 0, y: 0, w: layout.width, h: layout.height };
-    const named = anchorNames
-      .filter((anchor) => text.includes(anchor.name))
-      .map((anchor) => ({ ...anchor, at: project(anchor.world) }))
-      .filter(({ at: [x, y] }) => x > frame.x + 20 && x < frame.w - 20 && y > 60 && y < frame.h - 90);
-    // Athens and Sparta are named in most sentences; they anchor only when nothing else is named.
-    const specific = named.filter((anchor) => anchor.id !== "athens" && anchor.id !== "sparta");
-    const anchors = (specific.length ? specific : named).map((anchor) => anchor.at);
+    const anchors = namedIn(line.html)
+      .map((anchor) => project(anchor.world))
+      .filter(([x, y]) => x > 20 && x < layout.width - 20 && y > 60 && y < layout.height - 90);
     const previous = captions.filter((caption) => caption.step === index).at(-1);
     const previousBox = previous ? { ...boxOf(previous, project), w: previous.element.offsetWidth, h: previous.element.offsetHeight } : undefined;
     if (!anchors.length) {
@@ -2586,23 +2650,30 @@ document.fonts?.ready.then(relayout);
   goTo,
   // The attention budget of every step, for checking pacing.
   timing: () => steps.map((stepData, index) => {
-    const subtitles = subtitlePlan(index);
-    const tourPart = (stepData.beats ?? []).slice(0, TOUR_BEATS)
-      .reduce((total, beat) => total + FLY_SECONDS + beatHold(beat), 0);
-    const hold = Math.max(
-      subtitles.length ? subtitles[subtitles.length - 1].end + 0.6 : 0,
-      tourStart(index) + (tourPart ? tourPart + FLY_SECONDS + 0.4 : 0),
-      (state.stepMs * 0.55) / 1000 + animationSeconds(index) + 0.8,
-      isInterlude(index) || index === 0 ? readingSeconds(index) / state.speed : 0,
-    );
+    const slots = subtitlePlan(index);
     return {
       id: stepData.id,
-      hold: +hold.toFixed(1),
-      animation: +animationSeconds(index).toFixed(1),
-      subtitles: subtitles.length ? +subtitles[subtitles.length - 1].end.toFixed(1) : 0,
+      hold: +holdSeconds(index, tourStart(index), undefined).toFixed(1),
+      animation: +(animationTime(index, 1) - animationTime(index, 0)).toFixed(1),
+      subtitles: slots.length ? +slots[slots.length - 1].end.toFixed(1) : 0,
       beats: stepData.beats?.length ?? 0,
     };
   }),
+  // Where the film's time goes, in characters of reading, by kind of information.
+  budget: () => {
+    const totals: Record<string, number> = { text: 0, refocus: 0, mark: 0, inset: 0, change: 0, label: 0, beat: 0, interlude: 0 };
+    steps.forEach((stepData, index) => {
+      if (index === 0 || isInterlude(index)) totals.interlude += interludeCost(index);
+      for (const slot of subtitlePlan(index)) {
+        const visual = slot.visuals.reduce((total, item) => total + item.cost, 0);
+        totals.text += textCost(slot.html);
+        totals.refocus += (slot.end - slot.start) * READING_RATE * state.speed - textCost(slot.html) - visual;
+        for (const item of slot.visuals) totals[item.kind] += item.cost;
+      }
+      for (const beat of (stepData.beats ?? []).slice(0, TOUR_BEATS)) totals.beat += beatHold(beat) * READING_RATE * state.speed;
+    });
+    return Object.fromEntries(Object.entries(totals).map(([kind, chars]) => [kind, `${Math.round(chars)} chars · ${(seconds(chars) / 60).toFixed(1)} min`]));
+  },
   // Where a city is drawn right now, for tests that hover it.
   placeScreen: (id: PlaceId) => placeNodes.find((node) => node.id === id)?.screen,
   // Deterministic video export: begin autoplay from a step on a virtual clock, then
