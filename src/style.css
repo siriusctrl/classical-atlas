@@ -1380,32 +1380,48 @@ body {
   pointer-events: none;
 }
 
-.subtitle {
+/* Narration written onto the map beside what it is about. */
+.narration {
   position: fixed;
-  left: 50%;
-  bottom: 104px;
-  z-index: 5;
-  max-width: min(880px, calc(100% - 48px));
-  padding: 11px 22px 12px;
-  color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--paper-line);
-  border-radius: 3px;
-  box-shadow: 0 14px 34px rgb(0 0 0 / 10%);
-  font-size: 21px;
-  line-height: 1.65;
-  letter-spacing: 0.02em;
-  text-align: center;
-  opacity: 0;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
   pointer-events: none;
-  transform: translateX(-50%);
 }
 
-.subtitle cite {
-  display: none;
+.caption {
+  position: absolute;
+  top: 0;
+  left: 0;
+  isolation: isolate;
+  max-width: 17em;
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 560;
+  line-height: 1.75;
+  letter-spacing: 0.04em;
+  text-wrap: balance;
+  opacity: 0;
+  text-shadow: 0 0 2px var(--land), 0 0 7px var(--land), 0 0 16px var(--land);
+  will-change: transform, opacity;
 }
 
-.subtitle strong {
+/* A soft wash of paper behind the words, so they read over coastlines and routes. */
+.caption::before {
+  position: absolute;
+  inset: -26px -34px;
+  z-index: -1;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--land) 62%, transparent) 55%, transparent);
+  content: "";
+}
+
+.caption span {
+  opacity: clamp(0, calc((var(--p) - var(--i)) / 5), 1);
+}
+
+.caption strong {
   color: var(--sparta);
   font-weight: 800;
 }
@@ -1790,9 +1806,8 @@ body {
     width: min(260px, calc(100vw - 24px));
   }
 
-  .subtitle {
-    bottom: 86px;
-    padding: 9px 14px;
+  .caption {
+    max-width: min(15em, calc(100vw - 48px));
     font-size: 16px;
   }
 

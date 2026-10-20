@@ -944,7 +944,7 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     const waiting = arrival ? Math.min(settled, RECEDE + (1 - RECEDE) * arrival.lit) : settled;
     const focus = isHovered ? 1 : settled + (waiting - settled) * smooth(enter);
     node.screen = [x, y];
-    node.visible = alpha * (1 - dimmed);
+    node.visible = alpha * focus * (1 - dimmed);
     set(node.dot, "cx", fixed(x));
     set(node.dot, "cy", fixed(y));
     set(node.dot, "r", Math.max(radius, 0).toFixed(2));
@@ -1623,7 +1623,7 @@ const baseAnimationSeconds = (index: number) => {
 
 // Subtitles start as the camera settles (a J-cut: words lead the picture) and run one
 // sentence after another.
-const SUBTITLE_LEAD = 0.35;
+const SUBTITLE_LEAD = 0.5;
 const subtitlePlan = (index: number) => {
   const step = steps[index];
   if (index === 0 || isInterlude(index)) return [];
@@ -1634,6 +1634,63 @@ const subtitlePlan = (index: number) => {
     at += duration + 0.25;
     return line;
   });
+};
+
+// In documentary mode the map acts when the narration names it: a route starts drawing on
+// the sentence that names one of its stops and is followed for at least as long as the eye
+// needs. The rest of the step's animation stretches around those cues.
+type Cue = { tau: number; f: number };
+const cueCache = new Map<string, Cue[]>();
+const cuesAt = (index: number): Cue[] => {
+  const start = (state.stepMs * 0.55) / 1000;
+  const total = animationSeconds(index);
+  const key = `${index}|${state.subtitleBase}|${state.speed}|${start}|${total}|${state.documentary.on}`;
+  const cached = cueCache.get(key);
+  if (cached) return cached;
+  const keys: Cue[] = [];
+  if (state.documentary.on) {
+    const lines = subtitlePlan(index);
+    for (const { mark } of routeGeometries[index]) {
+      // Athens and Sparta come up in nearly every sentence, so they do not cue a route.
+      const names = routeStops[index]
+        .filter((stop) => stop.mark === mark && stop.id !== "athens" && stop.id !== "sparta")
+        .map((stop) => places[stop.id].name);
+      const line = lines.find((candidate) => names.some((name) => plainText(candidate.html).includes(name)));
+      if (!line) continue;
+      const [from, to] = mark.draw ?? [0, 1];
+      const begin = Math.max(line.start + 0.4, start);
+      keys.push({ tau: begin, f: from }, { tau: Math.max(line.end - 0.2, begin + markSeconds(index, mark) / state.speed), f: to });
+    }
+  }
+  keys.sort((a, b) => a.f - b.f);
+  const cues: Cue[] = [{ tau: start, f: 0 }];
+  for (const cue of keys) {
+    const last = cues[cues.length - 1];
+    if (cue.f > last.f && cue.tau > last.tau) cues.push(cue);
+  }
+  const last = cues[cues.length - 1];
+  if (last.f < 1) cues.push({ tau: Math.max(start + total, last.tau + (1 - last.f) * total * 0.6), f: 1 });
+  if (cueCache.size > 200) cueCache.clear();
+  cueCache.set(key, cues);
+  return cues;
+};
+
+// Fraction of a step's map animation at a moment, and the moment it reaches a fraction.
+const fractionAt = (index: number, tau: number) => {
+  const cues = cuesAt(index);
+  for (let order = 1; order < cues.length; order += 1) {
+    const [a, b] = [cues[order - 1], cues[order]];
+    if (tau < b.tau) return a.f + (b.f - a.f) * clamp01((tau - a.tau) / (b.tau - a.tau));
+  }
+  return 1;
+};
+const animationTime = (index: number, f: number) => {
+  const cues = cuesAt(index);
+  for (let order = 1; order < cues.length; order += 1) {
+    const [a, b] = [cues[order - 1], cues[order]];
+    if (f <= b.f) return a.tau + (b.tau - a.tau) * clamp01((f - a.f) / (b.f - a.f));
+  }
+  return cues[cues.length - 1].tau;
 };
 
 // ---------- Chapters strip ----------
@@ -1783,8 +1840,7 @@ const frameAt = (now: number): Frame => {
     ? 1 + 0.06 * smooth(tau / 12)
     : state.tour.on && !state.explore ? 1 + driftAt(state.step, tau) : 1;
   const storyCamera = { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
-  const animationStart = (state.stepMs * 0.55) / 1000;
-  const f = clamp01((tau - animationStart) / animationSeconds(state.step));
+  const f = fractionAt(state.step, tau);
   return {
     step: state.step,
     previous: state.previous,
@@ -1912,7 +1968,7 @@ function setPlaying(value: boolean) {
 
 // The tour waits for both the map animation and the subtitles.
 function tourStart(index: number) {
-  const animationEnd = (state.stepMs * 0.55) / 1000 + animationSeconds(index) * 0.92;
+  const animationEnd = animationTime(index, 0.92);
   const subtitles = subtitlePlan(index);
   return Math.max(animationEnd, subtitles.length ? subtitles[subtitles.length - 1].end + 0.4 : 0);
 }
@@ -1922,7 +1978,7 @@ const holdSeconds = (index: number) => {
   const tour = tourPlan(index);
   const subtitles = subtitlePlan(index);
   return Math.max(
-    animationStart + animationSeconds(index) + 0.8,
+    animationTime(index, 1) + 0.8,
     isInterlude(index) || index === 0 ? animationStart + readingSeconds(index) / state.speed : 0,
     subtitles.length ? subtitles[subtitles.length - 1].end + 0.6 : 0,
     tour.length ? tour[tour.length - 1].end + 0.4 : 0,
@@ -2267,9 +2323,7 @@ if (state.tour.on) {
   document.body.classList.add("is-documentary");
 }
 
-const subtitle = document.querySelector<HTMLElement>(".subtitle")!;
 const chapterTag = document.querySelector<HTMLElement>(".chapter-tag")!;
-let subtitleKey = "";
 let chapterTagKey = -1;
 
 const renderDocumentary = (now: number) => {
@@ -2279,16 +2333,6 @@ const renderDocumentary = (now: number) => {
   layout.center = { x: card.x + (full.x - card.x) * blend, y: card.y + (full.y - card.y) * blend };
 
   const tau = (now - state.changedAt) / 1000;
-  const lines = state.documentary.on ? subtitlePlan(state.step) : [];
-  const line = lines.find((candidate) => tau >= candidate.start - 0.2 && tau < candidate.end + 0.2);
-  const key = line ? `${state.step}:${line.start}` : "";
-  if (key !== subtitleKey) {
-    subtitleKey = key;
-    if (line) subtitle.innerHTML = line.html;
-  }
-  const lineAlpha = line ? smooth((tau - line.start + 0.2) / 0.35) * (1 - smooth((tau - line.end + 0.15) / 0.35)) : 0;
-  subtitle.style.opacity = lineAlpha.toFixed(3);
-  subtitle.style.transform = `translate(-50%, ${((1 - lineAlpha) * 6).toFixed(1)}px)`;
 
   const showTag = state.documentary.on && !isInterlude(state.step) && state.step > 0;
   if (showTag && chapterTagKey !== state.step) {
@@ -2300,11 +2344,206 @@ const renderDocumentary = (now: number) => {
   chapterTag.style.opacity = tagAlpha.toFixed(3);
 };
 
+
+// ---------- Narration on the map ----------
+
+// In documentary mode each sentence is written onto the map beside what it talks about —
+// the places it names, else where the eye already is — in the clearest nearby space, so
+// reading and looking happen in the same place. Captions hold to the map as it drifts.
+const narration = document.querySelector<HTMLElement>(".narration")!;
+type Caption = { key: string; step: number; element: HTMLElement; world: XY; start: number; end: number; alpha: number };
+let captions: Caption[] = [];
+
+const anchorNames = [
+  ...placeIds.map((id) => ({ name: places[id].name, id: id as PlaceId | undefined, world: toWorld(id) })),
+  ...mapTexts.map(({ text, world }) => ({ name: text.name.replace(/\s+/g, ""), id: undefined, world })),
+];
+
+// The story camera at rest in this step: where captions are placed and drawn, so a caption
+// waits at its spot while the camera is still landing.
+const restProjection = (index: number, tau: number) => {
+  if (state.explore) return screen;
+  const view = state.target ?? viewOf(steps[index].camera);
+  const scale = (layout.stage.w / view[2]) * (state.tour.on ? 1 + driftAt(index, tau) : 1);
+  const ox = layout.center.x - view[0] * scale;
+  const oy = layout.center.y - view[1] * scale;
+  return ([x, y]: XY): XY => [x * scale + ox, y * scale + oy];
+};
+
+const overlapArea = (a: Box, b: Box) =>
+  Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+const boxGap = (a: Box, b: Box) =>
+  Math.hypot(Math.max(0, a.x - (b.x + b.w), b.x - (a.x + a.w)), Math.max(0, a.y - (b.y + b.h), b.y - (a.y + a.h)));
+
+// Everything a caption must not cover: the step's cities and their names (including those
+// still to light up), its routes including the part not drawn yet, tour pins and the chrome.
+const captionObstacles = (index: number, project: (point: XY) => XY, tau: number) => {
+  const boxes: Box[] = [];
+  const focus = focusAt[index];
+  const stops = new Set(routeStops[index].map((stop) => stop.id));
+  for (const node of placeNodes) {
+    // The step's own subject, not what is still fading out from the step before.
+    const relevant = focus === "all" ? node.visible > 0.15 && node.changes.length > 0 : focus.has(node.id) || stops.has(node.id);
+    if (!relevant) continue;
+    const [x, y] = project(node.world);
+    boxes.push({ x: x - 10, y: y - 10, w: 20, h: 20 });
+    const size = node.major ? 15 : 13;
+    const width = places[node.id].name.length * size * 1.1 + 6;
+    const lx = x + node.offset[0];
+    const ly = y + node.offset[1];
+    const left = node.offset[0] > 0 ? lx : node.offset[0] < 0 ? lx - width : lx - width / 2;
+    boxes.push({ x: left - 4, y: ly - size - 2, w: width + 8, h: size + 9 });
+  }
+  for (const { geometry } of routeGeometries[index]) {
+    for (let order = 0; order < geometry.points.length; order += 4) {
+      const [x, y] = project(geometry.points[order]);
+      boxes.push({ x: x - 14, y: y - 14, w: 28, h: 28 });
+    }
+  }
+  for (const node of beatNodes[index]) {
+    const [x, y] = project(node.world);
+    boxes.push({ x: x - 16, y: y - 16, w: 32, h: 32 });
+  }
+  const chrome = [".map-tools", ".map-year", ".controls", ".masthead", ".chapters"];
+  if (insetsOf(index).length) chrome.push(".map-inset");
+  if (tau < 6) chrome.push(".chapter-tag");
+  for (const selector of chrome) {
+    const rect = document.querySelector(selector)?.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) boxes.push({ x: rect.left - 14, y: rect.top - 14, w: rect.width + 28, h: rect.height + 28 });
+  }
+  return boxes;
+};
+
+// The clearest spot near the subject, close to where the previous caption left the eye.
+const placeCaption = (size: { w: number; h: number }, target: Box, obstacles: Box[], previous: Box | undefined) => {
+  const frame = { x: 20, y: 64, w: layout.width - 40, h: layout.height - 64 - 96 };
+  const candidates: XY[] = [];
+  for (const gap of [24, 60, 120]) {
+    const xs = [target.x - gap - size.w, target.x + target.w / 2 - size.w / 2, target.x + target.w + gap];
+    const ys = [target.y - gap - size.h, target.y + target.h / 2 - size.h / 2, target.y + target.h + gap];
+    for (const x of xs) for (const y of ys) candidates.push([x, y]);
+  }
+  for (let col = 0; col <= 8; col += 1) {
+    for (let row = 0; row <= 6; row += 1) {
+      candidates.push([frame.x + ((frame.w - size.w) * col) / 8, frame.y + ((frame.h - size.h) * row) / 6]);
+    }
+  }
+  let best: Box | undefined;
+  let bestScore = Infinity;
+  for (const [x, y] of candidates) {
+    const box = { x, y, w: size.w, h: size.h };
+    const padded = { x: x - 10, y: y - 8, w: size.w + 20, h: size.h + 16 };
+    const outside = x < frame.x || y < frame.y || x + size.w > frame.x + frame.w || y + size.h > frame.y + frame.h;
+    let score = outside ? 1e9 : 0;
+    for (const obstacle of obstacles) score += overlapArea(padded, obstacle) / 25;
+    score += boxGap(box, target) * 1.2;
+    if (previous) score += overlapArea(padded, previous) / 10 + boxGap(box, previous) * 0.15;
+    if (score < bestScore) [best, bestScore] = [box, score];
+  }
+  return best!;
+};
+
+// One span per character, so the sentence can be written on.
+const writeCaption = (element: HTMLElement, html: string) => {
+  const template = document.createElement("template");
+  template.innerHTML = html.replace(/<cite>.*?<\/cite>/g, "").trim();
+  let order = 0;
+  const walk = (node: Node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType !== Node.TEXT_NODE) {
+        walk(child);
+        continue;
+      }
+      const fragment = document.createDocumentFragment();
+      for (const character of child.textContent ?? "") {
+        const span = document.createElement("span");
+        span.style.setProperty("--i", String(order++));
+        span.textContent = character;
+        fragment.append(span);
+      }
+      child.replaceWith(fragment);
+    }
+  };
+  walk(template.content);
+  element.replaceChildren(template.content);
+};
+
+const WRITE_RATE = 26; // characters per second as a sentence is written on
+
+const renderNarration = (now: number) => {
+  const tau = (now - state.changedAt) / 1000;
+  const index = state.step;
+  const project = restProjection(index, tau);
+  const lines = state.documentary.on ? subtitlePlan(index) : [];
+  for (const line of lines) {
+    const key = `${index}:${line.start.toFixed(3)}`;
+    if (tau < line.start - 0.2 || tau > line.end || captions.some((caption) => caption.key === key)) continue;
+    const element = document.createElement("p");
+    element.className = "caption";
+    writeCaption(element, line.html);
+    narration.append(element);
+    const size = { w: element.offsetWidth, h: element.offsetHeight };
+
+    const text = plainText(line.html);
+    const frame = { x: 0, y: 0, w: layout.width, h: layout.height };
+    const named = anchorNames
+      .filter((anchor) => text.includes(anchor.name))
+      .map((anchor) => ({ ...anchor, at: project(anchor.world) }))
+      .filter(({ at: [x, y] }) => x > frame.x + 20 && x < frame.w - 20 && y > 60 && y < frame.h - 90);
+    // Athens and Sparta are named in most sentences; they anchor only when nothing else is named.
+    const specific = named.filter((anchor) => anchor.id !== "athens" && anchor.id !== "sparta");
+    const anchors = (specific.length ? specific : named).map((anchor) => anchor.at);
+    const previous = captions.filter((caption) => caption.step === index).at(-1);
+    const previousBox = previous ? { ...boxOf(previous, project), w: previous.element.offsetWidth, h: previous.element.offsetHeight } : undefined;
+    if (!anchors.length) {
+      if (previousBox) anchors.push([previousBox.x + previousBox.w / 2, previousBox.y + previousBox.h / 2]);
+      else {
+        const focus = focusAt[index];
+        const subject = placeNodes.filter((node) => focus !== "all" && focus.has(node.id)).map((node) => project(node.world))
+          .filter(([x, y]) => x > 0 && x < layout.width && y > 0 && y < layout.height);
+        anchors.push(...(subject.length ? subject : [[layout.center.x, layout.center.y] as XY]));
+      }
+    }
+    const xs = anchors.map(([x]) => x);
+    const ys = anchors.map(([, y]) => y);
+    const target = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    const box = placeCaption(size, target, captionObstacles(index, project, tau), previousBox);
+    // Stored in world units so the caption rides the map.
+    const scale = project([1, 0])[0] - project([0, 0])[0];
+    const [ox, oy] = project([0, 0]);
+    captions.push({ key, step: index, element, world: [(box.x - ox) / scale, (box.y - oy) / scale], start: line.start, end: line.end, alpha: 0 });
+  }
+
+  captions = captions.filter((caption) => {
+    const leaving = caption.step !== index ? smooth(tau / 0.35) : 0;
+    const appear = smooth((tau - caption.start + 0.2) / 0.45);
+    const fade = Math.max(smooth((tau - caption.end + 0.1) / 0.5), leaving, state.documentary.on ? 0 : 1);
+    if (caption.step !== index ? leaving >= 1 : fade >= 1 && tau > caption.end) {
+      caption.element.remove();
+      return false;
+    }
+    const { x, y } = boxOf(caption, caption.step === index ? project : screen);
+    const { style } = caption.element;
+    // A caption from the step just left fades from wherever it was.
+    if (caption.step === index) caption.alpha = appear * (1 - fade);
+    style.opacity = (caption.step === index ? caption.alpha : caption.alpha * (1 - leaving)).toFixed(3);
+    style.transform = `translate(${x.toFixed(1)}px, ${(y + (1 - appear) * 8 - fade * 6).toFixed(1)}px)`;
+    style.setProperty("--p", ((tau - caption.start + 0.2) * WRITE_RATE * state.speed).toFixed(2));
+    return true;
+  });
+};
+
+const boxOf = (caption: Caption, project: (point: XY) => XY) => {
+  const [x, y] = project(caption.world);
+  return { x, y };
+};
+
 const step = (now: number) => {
   renderDocumentary(now);
   const frame = frameAt(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
   state.displayed = frame.camera;
   render(frame);
+  renderNarration(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
   tickAutoplay(now);
   if (pinned || (hovered && !tooltip.hidden)) {
     // Keep the tooltip attached while the camera moves.

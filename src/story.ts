@@ -118,6 +118,7 @@ export const seas: MapText[] = [
   { name: "科林斯湾", latin: "Sinus Corinthiacus", at: [22.45, 38.22], zoom: [2.4, 16], rotate: -12 },
   { name: "赫勒斯滂", latin: "Hellespontus", at: [26.43, 40.24], zoom: [5, 40], rotate: 38 },
   { name: "普罗庞提斯", latin: "Propontis", at: [28.0, 40.72], zoom: [1.8, 10] },
+  { name: "黑 海", latin: "Pontus Euxinus", at: [30.3, 42.75], zoom: [1, 6], size: 17 },
   { name: "第勒尼安海", latin: "Mare Tyrrhenum", at: [12.6, 39.6], zoom: [1, 4] },
 ];
 

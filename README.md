@@ -12,7 +12,7 @@ npm run dev        # http://localhost:5173/
 npm run check      # type-check and build into dist/
 ```
 
-Move between steps with the wheel, arrow keys, swipes, the controls, or the chapter strip. Play switches to documentary mode: full-screen map, subtitles paced by an attention model, and a guided tour of each step's first detail. `?theme=dark` selects the dark look; light is the default. Drag, pinch, double-click, or Ctrl+wheel to explore the map, and hover or tap a city for its note.
+Move between steps with the wheel, arrow keys, swipes, the controls, or the chapter strip. Play switches to documentary mode: full-screen map, narration written onto the map beside what it names and paced by an attention model, and a guided tour of each step's first detail. `?theme=dark` selects the dark look; light is the default. Drag, pinch, double-click, or Ctrl+wheel to explore the map, and hover or tap a city for its note.
 
 `node scripts/export-video.mjs <outdir> 1 3` renders autoplay from step 1 to 3 into a frame-exact MP4 on a virtual clock (with `npm run preview -- --port 4500` running).
 
