@@ -1772,12 +1772,25 @@ body {
 
   .map-inset,
   .map-inset.is-wide {
-    top: 124px;
+    /* Below the year and its ruler. */
+    top: 172px;
     right: 12px;
     width: 236px;
     padding: 12px 14px;
     transform-origin: top right;
     scale: 0.8;
+  }
+
+  /* On a phone the photo is a glance, not a plate: it must leave the map in view. */
+  .inset-figure img {
+    max-height: 150px;
+  }
+
+  .inset-figure figcaption {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
   }
 
   .inset-value {
@@ -1814,6 +1827,8 @@ body {
   .chapter-tag {
     top: 130px;
     left: 14px;
+    /* Clear of the inset in the right-hand corner. */
+    max-width: calc(100% - 232px);
   }
 
   .chapter-tag-title {

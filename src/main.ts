@@ -1416,6 +1416,9 @@ const beatNodes = steps.map((step) => (step.beats ?? []).map((beat, index) => {
   number.textContent = String(index + 1);
   return { beat, group, world: toWorld(beat.at), screen: [0, 0] as XY, visible: 0 };
 }));
+// Pins closer than this to a city (in pixels, centre to centre) begin to merge into it; at
+// twice this they stand apart with clear space between pin and dot.
+const PIN_MERGE = 22;
 const leader = svgElement("path", { class: "callout-leader" }, beatLayer);
 let calloutKey = "";
 let calloutSide = 0;
@@ -1428,7 +1431,22 @@ const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
       set(node.group, "display", current ? "inline" : "none");
       node.visible = current ? pins : 0;
       if (!current) continue;
-      const [x, y] = screen(node.world);
+      // Generalisation: a pin too close to a city to tell apart on screen is drawn on the city,
+      // as its marker; as the camera zooms in and they separate, it slides to its true place.
+      let [x, y] = screen(node.world);
+      let nearest: (typeof placeNodes)[number] | undefined;
+      let distance = Infinity;
+      // A beat already placed on a city stays on it.
+      for (const place of typeof node.beat.at === "string" ? [] : placeNodes) {
+        if (place.visible < 0.3) continue;
+        const d = Math.hypot(place.screen[0] - x, place.screen[1] - y);
+        if (d < distance) [nearest, distance] = [place, d];
+      }
+      if (nearest) {
+        const merge = 1 - smooth((distance - PIN_MERGE) / PIN_MERGE);
+        x += (nearest.screen[0] - x) * merge;
+        y += (nearest.screen[1] - y) * merge;
+      }
       node.screen = [x, y];
       const scale = 0.6 + 0.4 * backOut(pins);
       set(node.group, "transform", `translate(${fixed(x)},${fixed(y)}) scale(${scale.toFixed(3)})`);
@@ -1461,7 +1479,7 @@ const renderBeats = ({ step, f, beat, beatAppear }: Frame, dimmed: number) => {
       clamp(!layout.mobile && sx < layout.stage.x ? x + 34 : sx, 12, window.innerWidth - width - 12),
       clamp(sy, 72, window.innerHeight - height - 90),
     ]);
-  const cost = ([sx, sy]: number[]) => shownLastFrame.reduce((total, box) => total + overlapArea({ x: sx - 8, y: sy - 8, w: width + 16, h: height + 16 }, box), 0);
+  const cost = ([sx, sy]: number[]) => [...shownLastFrame, ...visibleBox(insetElement)].reduce((total, box) => total + overlapArea({ x: sx - 8, y: sy - 8, w: width + 16, h: height + 16 }, box), 0);
   const preferred = sides[calloutSide] ?? sides[0];
   const best = sides.reduce((a, b) => (cost(b) < cost(a) ? b : a));
   if (cost(best) + 200 < cost(preferred)) calloutSide = sides.indexOf(best);
@@ -1927,8 +1945,9 @@ const frameAt = (now: number): Frame => {
     const segments = tourPlan(state.step);
     if (segments.length) {
       const first = segments[0].start;
-      const last = segments[segments.length - 1].end;
-      touring = smooth((tau - first) / 0.5) * (1 - smooth((tau - last + 0.8) / 0.8));
+      // The tour ends on its beat and the next step flies on from there, so it never hands the
+      // screen back to the step's insets.
+      touring = smooth((tau - first) / 0.5);
     }
     for (const segment of segments) {
       if (tau < segment.start || tau >= segment.end) continue;
@@ -2506,7 +2525,7 @@ const captionObstacles = (index: number, project: (point: XY) => XY, tau: number
   }
   for (const node of beatNodes[index]) {
     const [x, y] = project(node.world);
-    boxes.push({ x: x - 16, y: y - 16, w: 32, h: 32 });
+    boxes.push({ x: x - 24, y: y - 24, w: 48, h: 48 });
   }
   const chrome = [".map-tools", ".map-year", ".controls", ".masthead", ".chapters"];
   if (tau < 6) chrome.push(".chapter-tag");
@@ -2527,13 +2546,23 @@ const insetFootprint = (index: number): Box[] => {
   if (known) return known;
   const list = insetsOf(index);
   let box: Box[] = [];
+  let settled = true;
   if (list.length) {
     const [html, className, opacity] = [insetElement.innerHTML, insetElement.className, insetElement.style.opacity];
     insetElement.style.opacity = "0";
     const rects = list.map((inset) => {
       insetElement.className = "map-inset";
       buildInset(inset);
-      return insetElement.getBoundingClientRect();
+      const rect = insetElement.getBoundingClientRect();
+      // A photo not loaded yet has no height: reserve the most it may take.
+      const image = insetElement.querySelector("img");
+      if (image && !image.complete) {
+        settled = false;
+        const scale = rect.width / insetElement.offsetWidth || 1;
+        const tallest = parseFloat(getComputedStyle(image).maxHeight) || 320;
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom + (tallest - image.offsetHeight) * scale };
+      }
+      return rect;
     });
     [insetElement.innerHTML, insetElement.className, insetElement.style.opacity] = [html, className, opacity];
     insetKey = "";
@@ -2546,7 +2575,7 @@ const insetFootprint = (index: number): Box[] => {
       h: Math.max(...rects.map((rect) => rect.bottom)) - top + 28,
     }];
   }
-  footprints.set(key, box);
+  if (settled) footprints.set(key, box);
   return box;
 };
 
@@ -2574,7 +2603,10 @@ const placeCaption = (size: { w: number; h: number }, target: Box, obstacles: Bo
     for (const obstacle of obstacles) score += overlapArea(padded, obstacle) / 25;
     score += boxGap(box, target) * 1.2;
     // The previous sentence is still fading out: never on top of it, but near it.
-    if (previous) score += overlapArea(padded, previous) * 5 + boxGap(box, previous) * 0.15;
+    if (previous) {
+      const apart = { x: previous.x - CAPTION_AIR, y: previous.y - CAPTION_AIR, w: previous.w + CAPTION_AIR * 2, h: previous.h + CAPTION_AIR * 2 };
+      score += overlapArea(box, apart) * 5 + boxGap(box, previous) * 0.15;
+    }
     if (score < bestScore) [best, bestScore] = [box, score];
   }
   return best!;
@@ -2606,6 +2638,8 @@ const writeCaption = (element: HTMLElement, html: string) => {
 };
 
 const WRITE_RATE = 26; // characters per second as a sentence is written on
+// Clear space kept from the sentence before, which is still fading out.
+const CAPTION_AIR = 16;
 
 const renderNarration = (now: number) => {
   const tau = (now - state.changedAt) / 1000;
@@ -2679,8 +2713,12 @@ const boxOf = (caption: Caption, project: (point: XY) => XY) => {
 // ships' tags; then region and sea names. Whatever finds no room fades out rather than
 // cover something more important, and fades ease so nothing pops.
 let chromeBoxes: Box[] = [];
+let toolsBox: Box | undefined;
+const mapTools = document.querySelector<HTMLElement>(".map-tools")!;
 const measureChrome = () => {
-  chromeBoxes = [".map-tools", ".map-year", ".controls", ".masthead", ".chapters"].flatMap((selector) => {
+  const rect = mapTools.getBoundingClientRect();
+  toolsBox = rect.width > 0 ? { x: rect.left - 4, y: rect.top - 4, w: rect.width + 8, h: rect.height + 8 } : undefined;
+  chromeBoxes = [".map-year", ".controls", ".masthead", ".chapters"].flatMap((selector) => {
     const rect = document.querySelector(selector)?.getBoundingClientRect();
     return rect && rect.width > 0 && rect.height > 0 ? [{ x: rect.left - 4, y: rect.top - 4, w: rect.width + 8, h: rect.height + 8 }] : [];
   });
@@ -2714,6 +2752,11 @@ const labelSlot = (node: (typeof placeNodes)[number], x: number, y: number, gap:
   };
 };
 const labelSlots = new Map<PlaceId, string>();
+const LABEL_AIR = 4;
+// Clear space between a tour pin and any other city's dot.
+const PIN_AIR = 8;
+// Clear space between two tour pins; the later one gives way to the earlier.
+const PIN_SPACING = 6;
 
 const faded = new WeakMap<Element, number>();
 let arrangedAt = 0;
@@ -2730,25 +2773,43 @@ const arrange = (time: number) => {
     return value;
   };
   const blocked = (box: Box, boxes: Box[], except?: Box) => boxes.some((other) => other !== except && overlapArea(box, other) > 2);
+  // Names keep a little air around them, so they read as separate from what is beside them.
+  const airy = (box: Box) => ({ x: box.x - LABEL_AIR, y: box.y - LABEL_AIR, w: box.w + LABEL_AIR * 2, h: box.h + LABEL_AIR * 2 });
 
   const card = document.querySelector<HTMLElement>(".panel > .is-active");
-  const fixedBoxes = [...chromeBoxes, ...claims.fixed, ...visibleBox(insetElement), ...visibleBox(chapterTag),
+  const inset = visibleBox(insetElement);
+  // The zoom buttons step aside while an inset needs their corner: content before tools.
+  const toolsYield = !!toolsBox && inset.some((box) => overlapArea(box, toolsBox!) > 0);
+  const tools = ease(mapTools, toolsYield ? 0 : 1);
+  mapTools.style.opacity = tools.toFixed(3);
+  mapTools.style.pointerEvents = tools > 0.5 ? "" : "none";
+  const fixedBoxes = [...chromeBoxes, ...(toolsBox && !toolsYield ? [toolsBox] : []), ...claims.fixed, ...inset, ...visibleBox(chapterTag),
     ...(card && !state.documentary.on ? visibleBox(card) : [])];
   const placed: Box[] = [...fixedBoxes];
 
+  // Tour pins first: during the tour they are what the eye is on.
+  const pinBoxes: Box[] = [];
+  for (const pin of claims.pins) {
+    const crowded = pinBoxes.some((other) => boxGap(pin.box, other) < PIN_SPACING);
+    const room = ease(pin.element, blocked(pin.box, fixedBoxes) || crowded ? 0 : 1);
+    set(pin.element, "opacity", (pin.alpha * room).toFixed(3));
+    if (room > 0.5) {
+      placed.push(pin.box);
+      pinBoxes.push(pin.box);
+    }
+  }
+  // City dots stay where they are; beneath the chrome or narration, or crowding a pin that is
+  // not on them, they fade.
   const dotBoxes = new Map<PlaceId, Box>();
   for (const dot of claims.dots) {
-    const room = ease(dot.elements[0], blocked(dot.box, fixedBoxes) ? 0.12 : 1);
+    const [cx, cy] = [dot.box.x + dot.box.w / 2, dot.box.y + dot.box.h / 2];
+    const crowding = pinBoxes.some((pin) => Math.hypot(pin.x + pin.w / 2 - cx, pin.y + pin.h / 2 - cy) > 4 && boxGap(dot.box, pin) < PIN_AIR);
+    const room = ease(dot.elements[0], blocked(dot.box, fixedBoxes) || crowding ? 0.12 : 1);
     dot.elements.forEach((element, order) => set(element, "opacity", (dot.alphas[order] * room).toFixed(3)));
     if (room > 0.5) {
       placed.push(dot.box);
       dotBoxes.set(dot.id, dot.box);
     }
-  }
-  for (const pin of claims.pins) {
-    const room = ease(pin.element, blocked(pin.box, fixedBoxes) ? 0 : 1);
-    set(pin.element, "opacity", (pin.alpha * room).toFixed(3));
-    if (room > 0.5) placed.push(pin.box);
   }
 
   const shown: Box[] = [];
@@ -2759,10 +2820,12 @@ const arrange = (time: number) => {
     let chosen: ReturnType<typeof labelSlot> | undefined;
     let direction = preferred;
     // Close to the dot first; a step further out if a pin sits on the city.
-    search: for (const gap of [label.radius + 3, label.radius + 15]) {
+    search: for (const gap of [label.radius + 6, label.radius + 18]) {
       for (const candidate of slotOrder(preferred)) {
         const slot = labelSlot(node, label.x, label.y, gap, candidate);
-        if (!blocked(slot.box, placed, own)) {
+        const onScreen = slot.box.x >= LABEL_AIR && slot.box.y >= LABEL_AIR
+          && slot.box.x + slot.box.w <= layout.width - LABEL_AIR && slot.box.y + slot.box.h <= layout.height - LABEL_AIR;
+        if (onScreen && !blocked(airy(slot.box), placed, own)) {
           [chosen, direction] = [slot, candidate];
           break search;
         }
@@ -2777,7 +2840,7 @@ const arrange = (time: number) => {
       placed.push(chosen.box);
       shown.push(chosen.box);
     } else {
-      const slot = labelSlot(node, label.x, label.y, label.radius + 3, preferred);
+      const slot = labelSlot(node, label.x, label.y, label.radius + 6, preferred);
       set(node.label, "x", fixed(slot.x));
       set(node.label, "y", fixed(slot.y));
     }
@@ -2785,12 +2848,12 @@ const arrange = (time: number) => {
   }
 
   for (const tag of claims.tags) {
-    const room = ease(tag.element, blocked(tag.box, placed) ? 0 : 1);
+    const room = ease(tag.element, blocked(airy(tag.box), placed) ? 0 : 1);
     set(tag.element, "opacity", (tag.alpha * room).toFixed(3));
     if (room > 0.5) placed.push(tag.box);
   }
   for (const text of claims.texts) {
-    const room = ease(text.element, blocked(text.box, placed) ? 0 : 1);
+    const room = ease(text.element, blocked(airy(text.box), placed) ? 0 : 1);
     set(text.element, "opacity", (text.alpha * room).toFixed(3));
   }
   shownLastFrame = [...shown, ...[...dotBoxes.values()]];
