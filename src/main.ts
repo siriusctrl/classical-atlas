@@ -62,6 +62,11 @@ const band = (value: number, [a, b, c, d]: [number, number, number, number]) =>
 const indexOf = new Map(steps.map((step, index) => [step.id, index]));
 const fixed = (value: number) => value.toFixed(1);
 
+// Story time comes from this clock; video export swaps in a virtual one that advances
+// exactly one frame at a time, so the result is independent of how fast the machine is.
+let virtualNow: number | undefined;
+const clock = (): number => virtualNow ?? performance.now();
+
 // Attribute writes are cached so idle frames touch almost nothing.
 const written = new WeakMap<Element, Map<string, string>>();
 const set = (element: Element, name: string, value: string | number) => {
@@ -88,7 +93,6 @@ const svgElement = <K extends keyof SVGElementTagNameMap>(
 
 const mapElement = document.querySelector<HTMLElement>(".map")!;
 const svg = document.querySelector<SVGSVGElement>(".map-svg")!;
-const grain = document.querySelector<HTMLElement>(".map-grain")!;
 const dim = document.querySelector<HTMLElement>(".map-dim")!;
 const yearNumber = document.querySelector<HTMLElement>(".year-number")!;
 const ruler = document.querySelector<HTMLElement>(".ruler")!;
@@ -119,13 +123,14 @@ const measure = () => {
       : { x: 0, y: 60, w: layout.width, h: layout.height - 190 };
   layout.fit = Math.min(layout.stage.w / land.width, layout.stage.h / land.height);
   svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  sizeCanvas();
 };
 
 // ---------- Colours ----------
 
 const colorKeys = [
   "athens", "sparta", "neutral", "persia", "grain", "gold", "ember", "char", "field",
-  "ruined", "land", "ink", "sea", "sea-light", "halo",
+  "ruined", "land", "ink", "sea", "sea-light", "halo", "waterline", "coast", "land-shadow",
 ] as const;
 const colors = Object.fromEntries(colorKeys.map((key) => [key, ""])) as Record<(typeof colorKeys)[number], string>;
 const readColors = () => {
@@ -133,8 +138,8 @@ const readColors = () => {
   for (const key of colorKeys) colors[key] = style.getPropertyValue(`--${key}`).trim();
 };
 
-// A fixed-seed paper grain, generated once.
-const paintGrain = () => {
+// A fixed-seed paper grain, generated once and tiled over the base map.
+const grainTile = (() => {
   const size = 220;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;
@@ -147,8 +152,8 @@ const paintGrain = () => {
     image.data.set([value, value * 0.98, value * 0.94, 34 + random() * 30], index * 4);
   }
   context.putImageData(image, 0, 0);
-  grain.style.backgroundImage = `url(${canvas.toDataURL()})`;
-};
+  return canvas;
+})();
 
 // ---------- Camera ----------
 
@@ -159,21 +164,99 @@ const viewOf = (camera: Camera): ZoomView => {
 
 // ---------- Static map ----------
 
-const defs = svgElement("defs", {}, svg);
-const seaGradient = svgElement("radialGradient", { id: "sea", cx: "62%", cy: "48%", r: "75%" }, defs);
-const seaStops = [0, 1].map((offset) => svgElement("stop", { offset }, seaGradient));
-svgElement("rect", { x: 0, y: 0, width: "100%", height: "100%", fill: "url(#sea)" }, svg);
+// ---------- Base map (canvas) ----------
 
-const world = svgElement("g", {}, svg);
-for (const [width, opacity] of [[30, 0.16], [19, 0.26], [11, 0.38], [5, 0.55]] as const) {
-  svgElement("path", { class: "waterline", d: land.land, "stroke-width": width, opacity }, world);
-}
-const shadow = svgElement("g", {}, svg);
-svgElement("path", { class: "land-shadow", d: land.land }, shadow);
-const landGroup = svgElement("g", {}, svg);
-svgElement("path", { class: "land", d: land.land }, landGroup);
+// Sea, coastline, waterlines, shadow, influence glows and paper grain share one canvas.
+// As SVG, the 20k-point coastline was re-tessellated with non-scaling strokes on every
+// camera frame and the blend-mode layers were re-composited; on canvas a still camera
+// costs nothing and a moving one is a handful of fills.
+const baseCanvas = document.createElement("canvas");
+baseCanvas.className = "map-canvas";
+baseCanvas.setAttribute("aria-hidden", "true");
+mapElement.insertBefore(baseCanvas, svg);
+const base = baseCanvas.getContext("2d")!;
+const landPath = new Path2D(land.land);
+const grainPattern = base.createPattern(grainTile, "repeat")!;
+const WATERLINES = [[30, 0.16], [19, 0.26], [11, 0.38], [5, 0.55]] as const;
+const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+let pixelRatio = 1;
+let baseKey = "";
 
-const glowLayer = svgElement("g", { class: "glows" }, svg);
+type Glow = { x: number; y: number; r: number; color: string; alpha: number };
+const glows: Glow[] = [];
+
+const sizeCanvas = () => {
+  pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  baseCanvas.width = Math.round(layout.width * pixelRatio);
+  baseCanvas.height = Math.round(layout.height * pixelRatio);
+  baseKey = "";
+};
+
+const withAlpha = (color: string, alpha: number) => {
+  const hex = /^#([0-9a-f]{6})$/i.exec(color);
+  const channels = hex
+    ? [0, 2, 4].map((offset) => parseInt(hex[1].slice(offset, offset + 2), 16))
+    : (color.match(/[\d.]+/g) ?? ["0", "0", "0"]).slice(0, 3).map(Number);
+  return `rgba(${channels.join(",")},${clamp01(alpha).toFixed(3)})`;
+};
+
+const drawBase = (s: number, ox: number, oy: number) => {
+  const key = `${ox.toFixed(2)}|${oy.toFixed(2)}|${s.toFixed(5)}|${glows.map((glow) =>
+    `${glow.x.toFixed(0)},${glow.y.toFixed(0)},${glow.r.toFixed(0)},${glow.color},${glow.alpha.toFixed(2)}`).join(";")}`;
+  if (key === baseKey) return;
+  baseKey = key;
+  const { width, height } = layout;
+  const context = base;
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
+
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  const sea = context.createRadialGradient(width * 0.62, height * 0.48, 0, width * 0.62, height * 0.48, Math.hypot(width, height) * 0.62);
+  sea.addColorStop(0, colors["sea-light"]);
+  sea.addColorStop(1, colors.sea);
+  context.fillStyle = sea;
+  context.fillRect(0, 0, width, height);
+
+  // World units from here; widths are divided by the scale to stay constant on screen.
+  context.setTransform(pixelRatio * s, 0, 0, pixelRatio * s, pixelRatio * ox, pixelRatio * oy);
+  context.lineJoin = "round";
+  context.strokeStyle = colors.waterline;
+  for (const [lineWidth, opacity] of WATERLINES) {
+    context.globalAlpha = opacity;
+    context.lineWidth = lineWidth / s;
+    context.stroke(landPath);
+  }
+  context.globalAlpha = 0.16;
+  context.fillStyle = colors["land-shadow"];
+  context.translate(2.5 / s, 4 / s);
+  context.fill(landPath, "evenodd");
+  context.translate(-2.5 / s, -4 / s);
+  context.globalAlpha = 1;
+  context.fillStyle = colors.land;
+  context.fill(landPath, "evenodd");
+  context.strokeStyle = colors.coast;
+  context.lineWidth = 0.9 / s;
+  context.stroke(landPath);
+
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.globalCompositeOperation = darkScheme.matches ? "screen" : "multiply";
+  for (const glow of glows) {
+    if (glow.alpha < 0.01 || glow.r < 1) continue;
+    const gradient = context.createRadialGradient(glow.x, glow.y, 0, glow.x, glow.y, glow.r);
+    gradient.addColorStop(0, withAlpha(glow.color, 0.5 * glow.alpha));
+    gradient.addColorStop(0.45, withAlpha(glow.color, 0.2 * glow.alpha));
+    gradient.addColorStop(1, withAlpha(glow.color, 0));
+    context.fillStyle = gradient;
+    context.fillRect(glow.x - glow.r, glow.y - glow.r, glow.r * 2, glow.r * 2);
+  }
+  context.globalCompositeOperation = darkScheme.matches ? "soft-light" : "multiply";
+  context.globalAlpha = 0.55;
+  context.fillStyle = grainPattern;
+  context.fillRect(0, 0, width, height);
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
+};
+
 const textLayer = svgElement("g", {}, svg);
 const traceLayer = svgElement("g", {}, svg);
 const wallLayer = svgElement("g", {}, svg);
@@ -626,10 +709,6 @@ const placeNodes = placeIds.map((id) => {
   const place = places[id];
   const major = id === "athens" || id === "sparta";
   const changes = changesFor(id);
-  const gradient = svgElement("radialGradient", { id: `glow-${id}` }, defs);
-  const stops = [[0, 0.5], [0.45, 0.2], [1, 0]].map(([offset, opacity]) =>
-    svgElement("stop", { offset, "stop-opacity": opacity }, gradient));
-  const glow = svgElement("circle", { fill: `url(#glow-${id})` }, glowLayer);
   const group = svgElement("g", {}, placeLayer);
   const ripple = svgElement("circle", { fill: "none", "stroke-width": 1.5 }, group);
   const ring = major ? svgElement("circle", { fill: "none", "stroke-width": 1.3 }, group) : undefined;
@@ -645,7 +724,7 @@ const placeNodes = placeIds.map((id) => {
     ? Array.from({ length: 12 }, () => svgElement("circle", { r: 1.6 }, effectLayer))
     : [];
   return {
-    id, world: toWorld(id), major, changes, gradient, stops, glow, ripple, ring, dot, label, debris,
+    id, world: toWorld(id), major, changes, ripple, ring, dot, label, debris,
     offset: [dx, dy] as XY,
     // Read by hover hit-testing and the tooltip.
     screen: [0, 0] as XY,
@@ -659,7 +738,8 @@ const colorOf = (side: Side | "ruined") => (side === "ruined" ? colors.land : co
 let hovered: PlaceId | undefined;
 
 const renderPlaces = (frame: Frame, dimmed: number) => {
-  const { P, step, previous: lastStep, enter, leave, time } = frame;
+  const { P, step, previous: lastStep, enter, leave } = frame;
+  glows.length = 0;
   for (const node of placeNodes) {
     let presence = 0;
     let fill = colors.neutral;
@@ -727,14 +807,17 @@ const renderPlaces = (frame: Frame, dimmed: number) => {
     set(node.ripple, "opacity", echo > 0 && echo < 1 ? ((1 - echo) * 0.7).toFixed(3) : "0");
 
     // Influence: a soft field of the city's colour, gone once it is destroyed.
-    const glowRadius = clamp(40 * zoomNow * layout.fit, 26, 120) * (1 + Math.sin(time * 0.7 + x * 0.01) * 0.03);
+    const glowRadius = clamp(40 * zoomNow * layout.fit, 26, 120);
     // Influence reads at regional scale; in close-ups it would fog the detail.
     const glowZoom = 1 - 0.75 * smooth((zoomNow - 3) / 6);
-    set(node.glow, "cx", fixed(x));
-    set(node.glow, "cy", fixed(y));
-    set(node.glow, "r", fixed(glowRadius * (0.4 + 0.6 * smooth(presence))));
-    set(node.glow, "opacity", (glowZoom * smooth(presence) * (1 - ruined) * (node.changes[0]?.side === "neutral" && fill === colors.neutral ? 0.35 : 1) * (1 - dimmed * 0.5)).toFixed(3));
-    for (const stop of node.stops) set(stop, "stop-color", fill);
+    glows.push({
+      x,
+      y,
+      r: glowRadius * (0.4 + 0.6 * smooth(presence)),
+      color: fill,
+      alpha: glowZoom * smooth(presence) * (1 - ruined)
+        * (node.changes[0]?.side === "neutral" && fill === colors.neutral ? 0.35 : 1) * (1 - dimmed * 0.5),
+    });
 
     node.debris.forEach((piece, pieceIndex) => {
       const angle = (pieceIndex / node.debris.length) * Math.PI * 2 + pieceIndex;
@@ -1059,10 +1142,6 @@ const render = (frame: Frame) => {
   const ox = layout.stage.x + layout.stage.w / 2 - camera.x * s;
   const oy = layout.stage.y + layout.stage.h / 2 - camera.y * s;
   screen = ([x, y]) => [x * s + ox, y * s + oy];
-  const transform = `translate(${ox.toFixed(2)},${oy.toFixed(2)}) scale(${s.toFixed(5)})`;
-  set(world, "transform", transform);
-  set(landGroup, "transform", transform);
-  set(shadow, "transform", `translate(${(ox + 2.5).toFixed(2)},${(oy + 4).toFixed(2)}) scale(${s.toFixed(5)})`);
 
   // Title and quotes dim the map; the dimming crossfades with the camera move.
   const fade = smooth(leave);
@@ -1073,7 +1152,10 @@ const render = (frame: Frame) => {
   series.style.opacity = (step === 0 ? 1 : previous === 0 ? 1 - fade : 0).toFixed(3);
   const blur = step === 0 ? 5 : previous === 0 ? 5 * (1 - fade) : 0;
   const filter = blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : "";
-  if (filter !== lastFilter) svg.style.filter = lastFilter = filter;
+  if (filter !== lastFilter) {
+    svg.style.filter = baseCanvas.style.filter = filter;
+    lastFilter = filter;
+  }
 
   stepGroups.forEach(({ group, renderers }, index) => {
     const current = index === step;
@@ -1095,6 +1177,7 @@ const render = (frame: Frame) => {
   renderMapTexts(clamp01(dimmed));
   renderWalls(P);
   renderPlaces(frame, clamp01(dimmed));
+  drawBase(s, ox, oy);
   renderYear(frame);
   renderInset(frame);
   renderBeats(frame, clamp01(dimmed));
@@ -1242,8 +1325,8 @@ const showCard = (index: number, direction: number) => {
   panel.classList.toggle("is-quote", Boolean(steps[index].quote));
   requestAnimationFrame(() => requestAnimationFrame(() => element.classList.add("is-active")));
   element.querySelector(".begin")?.addEventListener("click", () => {
-    goTo(1);
     setPlaying(true);
+    goTo(1);
   });
   element.querySelector(".browse")?.addEventListener("click", () => goTo(1));
 };
@@ -1277,7 +1360,17 @@ const state = {
   hoverBeat: undefined as number | undefined,
 };
 
-const FLY_SECONDS = 1.4;
+const FLY_SECONDS = 2.4;
+// Autoplay pushes the camera in slowly while it rests, as documentary maps do, and lets the
+// push go during the next flight so the motion never stops or jumps.
+const DRIFT = 0.045;
+
+// Quintic smootherstep: zero velocity and zero acceleration at both ends, so flights
+// leave and settle without the small jolt of a cubic ease.
+const glide = (t: number) => {
+  const x = clamp01(t);
+  return x * x * x * (x * (x * 6 - 15) + 10);
+};
 
 const beatView = (index: number, beat: Beat): ZoomView => {
   const [x, y] = toWorld(beat.at);
@@ -1315,17 +1408,41 @@ const tourPlan = (index: number) => {
 const viewFromCamera = ({ x, y, scale }: { x: number; y: number; scale: number }): ZoomView =>
   [x, y, layout.stage.w / scale];
 
-const moveCamera = (to: ZoomView, now: number) => {
+// Autoplay flies slower and further-looking; reading by hand keeps moves brisk.
+const moveCamera = (to: ZoomView, now: number, cinematic = state.playing) => {
   const path = interpolateZoom(viewFromCamera(state.displayed), to);
-  state.camera = { path, start: now, ms: clamp(path.duration * 0.85, 800, 2600) };
-  return state.camera.ms;
+  const ms = cinematic ? clamp(path.duration * 1.35, 1800, 6000) : clamp(path.duration * 0.8, 800, 2200);
+  state.camera = { path, start: now, ms };
+  return ms;
+};
+
+// Push-in factor at a moment in an autoplayed step: grows across each rest, released by
+// the flight that follows it.
+const driftAt = (index: number, tau: number) => {
+  const segments = tourPlan(index);
+  const rests: Array<{ from: number; to: number; amount: number; release?: number }> = [];
+  let from = state.stepMs / 1000;
+  for (const segment of segments) {
+    rests.push({ from, to: segment.start, amount: segment === segments[0] ? DRIFT : DRIFT * 0.6, release: segment.start });
+    from = segment.start + FLY_SECONDS;
+  }
+  rests.push({ from, to: holdSeconds(index) + 6, amount: segments.length ? DRIFT * 0.6 : DRIFT });
+  // The last rest after a tour comes home is the step's overview again.
+  if (segments.length) rests[rests.length - 1].amount = DRIFT;
+  for (const rest of rests) {
+    if (tau >= rest.from && tau < rest.to) return rest.amount * glide((tau - rest.from) / Math.max(rest.to - rest.from, 1));
+    if (rest.release !== undefined && tau >= rest.release && tau < rest.release + FLY_SECONDS) {
+      return rest.amount * (1 - glide((tau - rest.release) / FLY_SECONDS));
+    }
+  }
+  return 0;
 };
 
 const frameAt = (now: number): Frame => {
   const tau = (now - state.changedAt) / 1000;
   const cameraT = clamp01((now - state.camera.start) / state.camera.ms);
   let view = state.camera.path && cameraT < 1
-    ? state.camera.path(easeInOut(cameraT))
+    ? state.camera.path(glide(cameraT))
     : state.target ?? viewOf(steps[state.step].camera);
   let beat = state.focusBeat ?? state.hoverBeat;
   let beatAppear = beat === undefined ? 0 : 1;
@@ -1339,7 +1456,7 @@ const frameAt = (now: number): Frame => {
     }
     for (const segment of segments) {
       if (tau < segment.start || tau >= segment.end) continue;
-      view = segment.path(easeInOut(clamp01((tau - segment.start) / FLY_SECONDS)));
+      view = segment.path(glide((tau - segment.start) / FLY_SECONDS));
       if (segment.beat !== undefined) {
         beat = segment.beat;
         beatAppear = smooth((tau - segment.start - FLY_SECONDS * 0.75) / 0.45)
@@ -1348,8 +1465,10 @@ const frameAt = (now: number): Frame => {
       break;
     }
   }
-  // A slow push-in while the title holds.
-  const push = state.step === 0 ? 1 + 0.06 * smooth(tau / 12) : 1;
+  // A slow push-in while the title holds, and the autoplay drift elsewhere.
+  const push = state.step === 0
+    ? 1 + 0.06 * smooth(tau / 12)
+    : state.tour.on && !state.explore ? 1 + driftAt(state.step, tau) : 1;
   const storyCamera = { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
   const animationStart = (state.stepMs * 0.55) / 1000;
   const f = clamp01((tau - animationStart) / ANIMATION_SECONDS);
@@ -1386,7 +1505,7 @@ function goTo(target: number) {
     if (state.explore) returnToStory();
     return;
   }
-  const now = performance.now();
+  const now = clock();
   const direction = Math.sign(index - state.step);
   state.stepMs = moveCamera(viewOf(steps[index].camera), now);
   state.previous = state.step;
@@ -1406,7 +1525,7 @@ function goTo(target: number) {
 }
 
 function returnToStory() {
-  moveCamera(viewOf(steps[state.step].camera), performance.now());
+  moveCamera(viewOf(steps[state.step].camera), clock());
   state.explore = undefined;
   state.target = undefined;
   state.focusBeat = undefined;
@@ -1417,7 +1536,7 @@ function returnToStory() {
 function focusBeat(order: number) {
   if (state.playing) setPlaying(false);
   const view = beatView(state.step, steps[state.step].beats![order]);
-  moveCamera(view, performance.now());
+  moveCamera(view, clock());
   state.explore = undefined;
   state.target = view;
   state.focusBeat = order;
@@ -1429,16 +1548,20 @@ function focusBeat(order: number) {
 const speeds = [0.75, 1, 1.5, 2];
 
 function setPlaying(value: boolean) {
-  const tau = (performance.now() - state.changedAt) / 1000;
+  const tau = (clock() - state.changedAt) / 1000;
   if (!value && state.tour.on) {
-    // Pausing mid-tour leaves the camera and callout where they are.
-    const active = frameAt(performance.now());
-    const home = viewOf(steps[state.step].camera);
-    if (Math.abs(active.camera.x - home[0]) > 1 || Math.abs(active.camera.scale - layout.stage.w / home[2]) > 0.01) {
+    const now = clock();
+    const active = frameAt(now);
+    if (active.beat !== undefined && active.beatAppear > 0.5) {
+      // Paused on a beat: keep the camera and its callout where they are.
       state.explore = { ...state.displayed };
       recenter.hidden = false;
+      state.focusBeat = active.beat;
+    } else {
+      // Paused between beats: settle back onto the step's own view.
+      state.tour.on = false;
+      moveCamera(viewOf(steps[state.step].camera), now, false);
     }
-    state.focusBeat = active.beat;
   }
   if (value) {
     state.target = undefined;
@@ -1797,9 +1920,9 @@ if (query.get("tour") === "1") state.tour = { on: true, base: 0.55 + ANIMATION_S
 const hashStep = steps.findIndex((step) => `#${step.id}` === window.location.hash);
 const initial = frozen ?? (hashStep > 0 ? hashStep : 0);
 state.step = initial;
-state.changedAt = performance.now() - (frozen === undefined ? 0 : frozenSeconds * 1000);
+state.changedAt = clock() - (frozen === undefined ? 0 : frozenSeconds * 1000);
 
-const loop = (now: number) => {
+const step = (now: number) => {
   const frame = frameAt(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
   state.displayed = frame.camera;
   render(frame);
@@ -1809,6 +1932,16 @@ const loop = (now: number) => {
     const node = placeNodes.find((candidate) => candidate.id === (pinned ?? hovered));
     if (node && node.visible < 0.2) closeTooltip(true);
   }
+  if (virtualNow !== undefined) {
+    // Card fades are CSS transitions in real time; in export they follow the virtual clock.
+    const card = document.querySelector<HTMLElement>(".panel > .is-active, .quote-layer > .is-active");
+    if (card) card.style.opacity = smooth((now - state.changedAt) / 600).toFixed(3);
+  }
+  return frame;
+};
+
+const loop = (now: number) => {
+  step(virtualNow ?? now);
   requestAnimationFrame(loop);
 };
 
@@ -1816,13 +1949,10 @@ const relayout = () => measure();
 
 const applyScheme = () => {
   readColors();
-  for (const [stop, key] of [[seaStops[0], "sea-light"], [seaStops[1], "sea"]] as const) {
-    stop.setAttribute("stop-color", colors[key]);
-  }
+  baseKey = "";
 };
 
 applyScheme();
-paintGrain();
 relayout();
 showCard(initial, 0);
 updateChrome();
@@ -1834,12 +1964,32 @@ document.fonts?.ready.then(relayout);
 (window as typeof window & { __atlas?: unknown }).__atlas = {
   steps: steps.length,
   goTo,
+  // Deterministic video export: begin autoplay from a step on a virtual clock, then
+  // advance it frame by frame and screenshot each frame.
+  export: {
+    begin: (from: number) => {
+      virtualNow = 1000;
+      document.body.classList.add("is-export");
+      state.step = Math.max(0, from - 1);
+      state.previous = undefined;
+      state.changedAt = virtualNow - 120_000;
+      state.camera.path = undefined;
+      showCard(state.step, 0);
+      setPlaying(true);
+      goTo(from);
+    },
+    advance: (milliseconds: number) => {
+      virtualNow = (virtualNow ?? 0) + milliseconds;
+      const frame = step(virtualNow);
+      return { step: state.step, x: frame.camera.x, y: frame.camera.y, scale: frame.camera.scale, playing: state.playing };
+    },
+  },
   // Freeze on a step at a time since entering it, for capture.
   freeze: (step: number, seconds: number) => {
     frozen = step;
     state.previous = undefined;
     state.step = step;
-    state.changedAt = performance.now() - seconds * 1000;
+    state.changedAt = clock() - seconds * 1000;
     showCard(step, 0);
     updateChrome();
   },

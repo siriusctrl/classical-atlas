@@ -9,7 +9,7 @@
   --ink: #25241f;
   --muted: #6f6a5f;
   --faint: #9c968a;
-  --paper: rgb(248 245 237 / 93%);
+  --paper: rgb(248 245 237 / 96%);
   --paper-solid: #f8f5ed;
   --paper-line: rgb(37 36 31 / 10%);
   --halo: rgb(243 238 226 / 92%);
@@ -24,8 +24,6 @@
   --neutral: #8d887d;
   --ruined: #25241f;
   --dim: rgb(22 21 18 / 72%);
-  --grain-blend: multiply;
-  --glow-blend: multiply;
   --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --display: "Cormorant Garamond", "Noto Serif SC Variable", serif;
   --sans: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -43,7 +41,7 @@
     --ink: #ece6d8;
     --muted: #a49e91;
     --faint: #6d685f;
-    --paper: rgb(24 28 31 / 92%);
+    --paper: rgb(24 28 31 / 95%);
     --paper-solid: #181c1f;
     --paper-line: rgb(236 230 216 / 10%);
     --halo: rgb(32 37 42 / 92%);
@@ -58,8 +56,6 @@
     --neutral: #8f8a80;
     --ruined: #ece6d8;
     --dim: rgb(4 6 7 / 76%);
-    --grain-blend: soft-light;
-    --glow-blend: screen;
   }
 }
 
@@ -89,24 +85,20 @@ body {
   background: var(--sea);
 }
 
+.map-canvas,
 .map-svg {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.map-grain,
 .map-dim,
 .map-vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-}
-
-.map-grain {
-  opacity: 0.55;
-  mix-blend-mode: var(--grain-blend);
-  background-size: 220px 220px;
 }
 
 .map-vignette {
@@ -116,32 +108,6 @@ body {
 .map-dim {
   background: var(--dim);
   opacity: 0;
-}
-
-.waterline {
-  fill: none;
-  stroke: var(--waterline);
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.land-shadow {
-  fill: var(--land-shadow);
-  fill-rule: evenodd;
-  opacity: 0.16;
-}
-
-.land {
-  fill: var(--land);
-  fill-rule: evenodd;
-  stroke: var(--coast);
-  stroke-width: 0.9;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.glows {
-  mix-blend-mode: var(--glow-blend);
 }
 
 .region-label {
@@ -347,8 +313,6 @@ body {
   border: 1px solid var(--paper-line);
   border-radius: 3px;
   box-shadow: 0 18px 40px rgb(0 0 0 / 10%);
-  backdrop-filter: blur(14px) saturate(1.1);
-  -webkit-backdrop-filter: blur(14px) saturate(1.1);
   font-family: var(--serif);
   opacity: 0;
   pointer-events: none;
@@ -714,8 +678,6 @@ body {
   background: var(--paper);
   border: 1px solid var(--paper-line);
   border-radius: 999px;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   font: 600 12.5px var(--serif);
   letter-spacing: 0.08em;
   cursor: pointer;
@@ -767,8 +729,6 @@ body {
   background: var(--paper);
   border: 1px solid var(--paper-line);
   border-radius: 999px;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   font: 600 16px var(--serif);
   cursor: pointer;
 }
@@ -833,8 +793,6 @@ body {
   border: 1px solid var(--paper-line);
   border-radius: 3px;
   box-shadow: 0 24px 60px rgb(0 0 0 / 10%);
-  backdrop-filter: blur(16px) saturate(1.1);
-  -webkit-backdrop-filter: blur(16px) saturate(1.1);
   scrollbar-width: thin;
 }
 
@@ -904,8 +862,6 @@ body {
   background: none;
   border: 0;
   box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
   color: #f4efe3;
 }
 
@@ -1072,8 +1028,6 @@ body {
   background: var(--paper);
   border: 1px solid var(--paper-line);
   border-radius: 50%;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   font: 400 26px/1 var(--display);
   cursor: pointer;
 }
@@ -1461,6 +1415,16 @@ body {
   border: 0;
   font: 400 26px var(--display);
   cursor: pointer;
+}
+
+.is-export .panel > *,
+.is-export .quote-layer > * {
+  transition: none;
+}
+
+.is-export .panel > .is-active,
+.is-export .quote-layer > .is-active {
+  transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

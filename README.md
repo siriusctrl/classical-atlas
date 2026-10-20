@@ -14,6 +14,8 @@ npm run check      # type-check and build into dist/
 
 Move between steps with the wheel, arrow keys, swipes, the controls, or the chapter strip; play turns the story into a paced, video-like sequence. Drag, pinch, double-click, or Ctrl+wheel to explore the map, and hover or tap a city for its note.
 
+`node scripts/export-video.mjs <outdir> 1 3` renders autoplay from step 1 to 3 into a frame-exact MP4 on a virtual clock (with `npm run preview -- --port 4500` running).
+
 `?step=12&t=4` freezes step 12 four seconds after it was entered; `#sicily` deep-links to a step. `window.__atlas.freeze(step, seconds)` does the same from a script.
 
 ## How it works
