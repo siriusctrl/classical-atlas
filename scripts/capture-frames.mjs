@@ -26,7 +26,8 @@ const page = await browser.newPage({
 for (const [index, token] of list.split(",").entries()) {
   const [step, seconds] = token.split(":");
   const query = seconds === undefined ? `p=${step}` : `step=${step}&t=${seconds}`;
-  await page.goto(`${base}?${query}`, { waitUntil: "networkidle" });
+  const theme = scheme === "dark" ? "&theme=dark" : "";
+  await page.goto(`${base}?${query}${theme}`, { waitUntil: "networkidle" });
   // Let the card entrance transition finish.
   await page.waitForTimeout(900);
   await page.screenshot({ path: `${out}/${String(index).padStart(3, "0")}.png` });

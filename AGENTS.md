@@ -18,11 +18,12 @@
 - Keep the site static. No server, accounts, or runtime APIs.
 - The story is a sequence of steps. Every frame is a pure function of the current step, the seconds since it was entered, and an ambient clock used only for small idle motion. Navigation (wheel, keys, swipes, buttons, the chapter strip), autoplay, and frame capture (`?step=12&t=4`) all just choose a step and a time; this is what makes video export possible.
 - The reader can always explore: dragging or zooming detaches only the camera ("回到故事" reattaches it), and hovering or tapping a place opens its tooltip. Exploring never changes the step.
-- Autoplay holds each step long enough to read it (see `readingSeconds`) and never cuts a step's animation short.
+- Autoplay is documentary mode: the card gives way to sentence-by-sentence subtitles, the map takes the whole screen, and a chapter tag introduces each step. Reading mode (manual or paused) shows the card with its citations.
+- Pacing comes from the attention model in `src/main.ts` (`sentenceSeconds`, `markSeconds`, `insetSeconds`, `animationSeconds`, `subtitlePlan`, `tourStart`): what a viewer must read or follow decides how long it stays. Only one reading task at a time: the tour flies to a beat only after the subtitles finish, and autoplay tours only the first beat of a step (`TOUR_BEATS`). Check the budget with `window.__atlas.timing()` after content changes.
 - Keep the camera stage free of the card column on desktop and of the card area on mobile.
 - The base map (sea, coastline, waterlines, shadow, influence glows, grain) is painted on one canvas and only redrawn when the camera or glows change; SVG holds the light, interactive layers. Do not move large paths back into SVG or put blend modes or backdrop filters over the moving map.
 - Story time comes from `clock()`. Camera moves use the quintic `glide` ease; autoplay flights are longer, and the camera drifts in slowly while it rests and releases the drift on the next flight, so motion never stops or jumps.
-- Support desktop and mobile, light and dark, together.
+- Light is the default look and does not follow the OS. Dark is an opt-in look (`?theme=dark`) for particular uses such as exports; keep both palettes working.
 - Do not commit `dist/`, `artifacts/`, or verification output.
 
 ## Content invariants

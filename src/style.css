@@ -29,34 +29,33 @@
   --sans: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --sea: #0e1316;
-    --sea-light: #151c20;
-    --waterline: #1d272c;
-    --land: #20252a;
-    --land-shadow: #000;
-    --coast: #3c464c;
-    --ink: #ece6d8;
-    --muted: #a49e91;
-    --faint: #6d685f;
-    --paper: rgb(24 28 31 / 95%);
-    --paper-solid: #181c1f;
-    --paper-line: rgb(236 230 216 / 10%);
-    --halo: rgb(32 37 42 / 92%);
-    --athens: #7fb0de;
-    --sparta: #e2685b;
-    --persia: #b993d2;
-    --gold: #ddb45a;
-    --grain: #c8a96f;
-    --field: #3c4134;
-    --char: #120f0d;
-    --ember: #f08a3c;
-    --neutral: #8f8a80;
-    --ruined: #ece6d8;
-    --dim: rgb(4 6 7 / 76%);
-  }
+/* Dark is an opt-in look (?theme=dark), not an OS-driven mode: the atlas is light by default. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --sea: #0e1316;
+  --sea-light: #151c20;
+  --waterline: #1d272c;
+  --land: #20252a;
+  --land-shadow: #000;
+  --coast: #3c464c;
+  --ink: #ece6d8;
+  --muted: #a49e91;
+  --faint: #6d685f;
+  --paper: rgb(24 28 31 / 95%);
+  --paper-solid: #181c1f;
+  --paper-line: rgb(236 230 216 / 10%);
+  --halo: rgb(32 37 42 / 92%);
+  --athens: #7fb0de;
+  --sparta: #e2685b;
+  --persia: #b993d2;
+  --gold: #ddb45a;
+  --grain: #c8a96f;
+  --field: #3c4134;
+  --char: #120f0d;
+  --ember: #f08a3c;
+  --neutral: #8f8a80;
+  --ruined: #ece6d8;
+  --dim: rgb(4 6 7 / 76%);
 }
 
 * {
@@ -1370,6 +1369,82 @@ body {
   pointer-events: none;
 }
 
+/* ---------- Documentary mode ---------- */
+
+.panel {
+  transition: opacity 600ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.is-documentary .panel {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.subtitle {
+  position: fixed;
+  left: 50%;
+  bottom: 104px;
+  z-index: 5;
+  max-width: min(880px, calc(100% - 48px));
+  padding: 11px 22px 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 3px;
+  box-shadow: 0 14px 34px rgb(0 0 0 / 10%);
+  font-size: 21px;
+  line-height: 1.65;
+  letter-spacing: 0.02em;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.subtitle cite {
+  display: none;
+}
+
+.subtitle strong {
+  color: var(--sparta);
+  font-weight: 800;
+}
+
+.chapter-tag {
+  position: fixed;
+  top: 76px;
+  left: 32px;
+  z-index: 5;
+  display: grid;
+  gap: 4px;
+  padding-left: 14px;
+  border-left: 3px solid var(--sparta);
+  opacity: 0;
+  pointer-events: none;
+  text-shadow: 0 0 12px var(--sea), 0 0 3px var(--sea);
+}
+
+.chapter-tag-index {
+  color: var(--faint);
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.chapter-tag-kicker {
+  color: var(--sparta);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+}
+
+.chapter-tag-title {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
 /* ---------- Beats ---------- */
 
 .beat-pin {
@@ -1713,6 +1788,21 @@ body {
 
   .callout {
     width: min(260px, calc(100vw - 24px));
+  }
+
+  .subtitle {
+    bottom: 86px;
+    padding: 9px 14px;
+    font-size: 16px;
+  }
+
+  .chapter-tag {
+    top: 130px;
+    left: 14px;
+  }
+
+  .chapter-tag-title {
+    font-size: 21px;
   }
 
   .sources-sheet {

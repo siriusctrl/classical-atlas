@@ -22,7 +22,7 @@ mkdirSync(`${out}/frames`, { recursive: true });
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: Number(width), height: Number(height) }, colorScheme: scheme });
-await page.goto(base, { waitUntil: "networkidle" });
+await page.goto(`${base}${scheme === "dark" ? "?theme=dark" : ""}`, { waitUntil: "networkidle" });
 await page.evaluate(() => document.fonts.ready);
 await page.evaluate((step) => window.__atlas.export.begin(step), Number(from));
 

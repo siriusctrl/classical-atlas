@@ -31,8 +31,6 @@ type XY = [number, number];
 type Point = PlaceId | XY;
 
 const SVG = "http://www.w3.org/2000/svg";
-// Seconds a step's map animation takes once the camera has (mostly) arrived.
-const ANIMATION_SECONDS = 6;
 const RULER = { from: 432, to: 404, labelled: [431, 421, 413, 404] };
 
 const projection = geoConicConformal()
@@ -112,7 +110,17 @@ const tally = document.querySelector<HTMLElement>(".tally")!;
 const tallyAthens = document.querySelector<HTMLElement>(".tally-athens")!;
 const tallySparta = document.querySelector<HTMLElement>(".tally-sparta")!;
 
-const layout = { width: 0, height: 0, mobile: false, fit: 1, stage: { x: 0, y: 0, w: 0, h: 0 } };
+const layout = {
+  width: 0,
+  height: 0,
+  mobile: false,
+  fit: 1,
+  // The card-mode stage sets the scale; the documentary stage (no card) only moves the
+  // centre, so switching modes slides the map instead of rescaling it.
+  stage: { x: 0, y: 0, w: 0, h: 0 },
+  full: { x: 0, y: 0, w: 0, h: 0 },
+  center: { x: 0, y: 0 },
+};
 
 const measure = () => {
   layout.width = mapElement.clientWidth;
@@ -124,6 +132,9 @@ const measure = () => {
     : layout.width >= 1100
       ? { x: 500, y: 60, w: layout.width - 500, h: layout.height - 190 }
       : { x: 0, y: 60, w: layout.width, h: layout.height - 190 };
+  layout.full = layout.mobile
+    ? { x: 0, y: 96, w: layout.width, h: layout.height - 96 - 150 }
+    : { x: 0, y: 60, w: layout.width, h: layout.height - 200 };
   layout.fit = Math.min(layout.stage.w / land.width, layout.stage.h / land.height);
   svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
   sizeCanvas();
@@ -181,7 +192,9 @@ const base = baseCanvas.getContext("2d")!;
 const landPath = new Path2D(land.land);
 const grainPattern = base.createPattern(grainTile, "repeat")!;
 const WATERLINES = [[30, 0.16], [19, 0.26], [11, 0.38], [5, 0.55]] as const;
-const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+// The look is chosen, not inherited from the OS: light unless ?theme=dark asks otherwise.
+if (new URLSearchParams(window.location.search).get("theme") === "dark") document.documentElement.dataset.theme = "dark";
+const darkLook = () => document.documentElement.dataset.theme === "dark";
 let pixelRatio = 1;
 let baseKey = "";
 
@@ -242,7 +255,7 @@ const drawBase = (s: number, ox: number, oy: number) => {
   context.stroke(landPath);
 
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.globalCompositeOperation = darkScheme.matches ? "screen" : "multiply";
+  context.globalCompositeOperation = darkLook() ? "screen" : "multiply";
   for (const glow of glows) {
     if (glow.alpha < 0.01 || glow.r < 1) continue;
     const gradient = context.createRadialGradient(glow.x, glow.y, 0, glow.x, glow.y, glow.r);
@@ -252,7 +265,7 @@ const drawBase = (s: number, ox: number, oy: number) => {
     context.fillStyle = gradient;
     context.fillRect(glow.x - glow.r, glow.y - glow.r, glow.r * 2, glow.r * 2);
   }
-  context.globalCompositeOperation = darkScheme.matches ? "soft-light" : "multiply";
+  context.globalCompositeOperation = darkLook() ? "soft-light" : "multiply";
   context.globalAlpha = 0.55;
   context.fillStyle = grainPattern;
   context.fillRect(0, 0, width, height);
@@ -1235,8 +1248,8 @@ const render = (frame: Frame) => {
   const { camera, step, previous, f, P, enter, leave, time } = frame;
   const s = camera.scale;
   zoomNow = s / layout.fit;
-  const ox = layout.stage.x + layout.stage.w / 2 - camera.x * s;
-  const oy = layout.stage.y + layout.stage.h / 2 - camera.y * s;
+  const ox = layout.center.x - camera.x * s;
+  const oy = layout.center.y - camera.y * s;
   screen = ([x, y]) => [x * s + ox, y * s + oy];
 
   // Title and quotes dim the map; the dimming crossfades with the camera move.
@@ -1370,7 +1383,7 @@ const readingSeconds = (index: number) => {
   if (step.quote) return 3.5 + plainText(step.quote.text + (step.quote.note ?? "")).length / 5;
   if (step.act) return 3.5 + plainText(step.act.line).length / 6;
   if (index === 0) return 9;
-  return Math.max(ANIMATION_SECONDS + 1.5, 2 + plainText(step.body.join("")).length / 8);
+  return Math.max(animationSeconds(index) + 1.5, 2 + plainText(step.body.join("")).length / 8);
 };
 
 const stepLabel = (index: number) =>
@@ -1446,6 +1459,94 @@ const showCard = (index: number, direction: number) => {
   element.querySelector(".browse")?.addEventListener("click", () => goTo(1));
 };
 
+// ---------- Attention ----------
+
+// How long each part of a step needs, estimated from what a viewer has to look at:
+// sentences read at a subtitle pace, a route followed by eye along its on-screen length,
+// each city that changes hands or gets a label glanced at once, each inset studied for a
+// time that depends on what it shows. Only one thing that needs reading runs at a time:
+// the camera tours the beats only after the subtitles are done.
+const READING_RATE = 7; // Chinese characters per second at subtitle pace
+const sentencesOf = (paragraphs: string[]) =>
+  paragraphs.flatMap((paragraph) => paragraph.split(/(?<=[。？！])/))
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => plainText(sentence).trim().length > 0);
+const sentenceSeconds = (sentence: string) => 0.8 + plainText(sentence).length / READING_RATE;
+
+const insetSeconds = (inset: Inset) => {
+  switch (inset.type) {
+    case "count": return 2.6 + plainText(inset.note ?? "").length / 9;
+    case "dots": return 3.8;
+    case "growth": return 3;
+    case "ratio": return 5;
+    case "trireme": return 7;
+    case "talent": return 7.5;
+    case "siege": return 9;
+    case "image": return 2.4 + plainText(inset.caption).length / 8;
+    case "note": return 1.5 + inset.lines.length * 1.1;
+  }
+};
+
+const markSeconds = (index: number, mark: Mark) => {
+  switch (mark.type) {
+    case "route": {
+      // The eye follows a drawn line at roughly 300 px a second.
+      const pixels = spline(mark.via).total * layout.fit * steps[index].camera.zoom;
+      return 1 + Math.min(pixels / 300, 6) + (mark.tag ? 0.4 : 0);
+    }
+    case "pulse": return 1.2;
+    case "blockade": return 2.2;
+    case "fields": return 3;
+    case "flow": return 2.5;
+  }
+};
+
+const changesAt = (index: number) =>
+  Object.values(allegiance).reduce((total, entries) =>
+    total + (entries ?? []).filter(([stepId]) => stepId === steps[index].id).length, 0);
+
+let attentionKey = "";
+let animationCache: number[] = [];
+// In documentary mode the map keeps changing while the narration runs, instead of
+// finishing early and waiting on the subtitles.
+const animationSeconds = (index: number) => {
+  const base = baseAnimationSeconds(index);
+  if (!state.documentary.on) return base;
+  const subtitles = subtitlePlan(index);
+  const span = subtitles.length ? subtitles[subtitles.length - 1].end - subtitles[0].start : 0;
+  return clamp(Math.max(base, span * 0.7), 4, 30);
+};
+
+// Seconds the map animation of a step takes; its mark and inset windows stretch with it.
+const baseAnimationSeconds = (index: number) => {
+  const key = `${layout.width}x${layout.height}`;
+  if (key !== attentionKey) {
+    attentionKey = key;
+    animationCache = steps.map((step, stepIndex) => {
+      const marks = (step.marks ?? []).reduce((total, mark) => total + markSeconds(stepIndex, mark), 0);
+      const insets = insetsOf(stepIndex).reduce((total, inset) => total + insetSeconds(inset), 0);
+      const glances = Math.min(changesAt(stepIndex) * 0.12, 3) + Math.min((step.labels?.length ?? 0) * 0.25, 2.5);
+      return clamp(Math.max(2.5 + marks * 0.65 + glances, insets / 0.85), 4, 15);
+    });
+  }
+  return animationCache[index];
+};
+
+// Subtitles start as the camera settles (a J-cut: words lead the picture) and run one
+// sentence after another.
+const SUBTITLE_LEAD = 0.35;
+const subtitlePlan = (index: number) => {
+  const step = steps[index];
+  if (index === 0 || isInterlude(index)) return [];
+  let at = state.subtitleBase;
+  return sentencesOf(step.body).map((html) => {
+    const duration = sentenceSeconds(html) / state.speed;
+    const line = { html, start: at, end: at + duration };
+    at += duration + 0.25;
+    return line;
+  });
+};
+
 // ---------- Chapters strip ----------
 
 chapters.innerHTML = steps.map((step, index) =>
@@ -1469,6 +1570,11 @@ const state = {
   // The guided tour runs while autoplay is on: base is when it starts (seconds into the
   // step) and from is where its first flight begins.
   tour: { on: false, base: 0, from: undefined as ZoomView | undefined },
+  // Documentary mode (autoplay): the card gives way to subtitles and the map takes the
+  // whole screen. `from` is the blend at the moment of the last switch.
+  documentary: { on: false, changedAt: 0, from: 0 },
+  // Seconds into the step when its subtitles begin (later if play was pressed mid-step).
+  subtitleBase: 0,
   // A camera target that replaces the step's own view, e.g. a beat the reader clicked.
   target: undefined as ZoomView | undefined,
   focusBeat: undefined as number | undefined,
@@ -1476,6 +1582,7 @@ const state = {
 };
 
 const FLY_SECONDS = 2.4;
+const TOUR_BEATS = 1;
 // Autoplay pushes the camera in slowly while it rests, as documentary maps do, and lets the
 // push go during the next flight so the motion never stops or jumps.
 const DRIFT = 0.045;
@@ -1493,7 +1600,8 @@ const beatView = (index: number, beat: Beat): ZoomView => {
   return [x, y, layout.stage.w / (layout.fit * zoom)];
 };
 
-const beatHold = (beat: Beat) => (2.4 + plainText(beat.text).length / 9) / state.speed;
+// Find the pin after the flight, then read the callout.
+const beatHold = (beat: Beat) => 1 + (0.8 + plainText(beat.text).length / READING_RATE) / state.speed;
 
 type Segment = { path: (t: number) => ZoomView; start: number; end: number; beat?: number };
 let planKey = "";
@@ -1505,7 +1613,8 @@ const tourPlan = (index: number) => {
   if (key === planKey) return plan;
   planKey = key;
   plan = [];
-  const beats = steps[index].beats ?? [];
+  // A guided tour stops at the first beat only; the rest stay on the map as pins.
+  const beats = (steps[index].beats ?? []).slice(0, TOUR_BEATS);
   if (beats.length === 0) return plan;
   let at = state.tour.base;
   let from = state.tour.from ?? viewOf(steps[index].camera);
@@ -1586,7 +1695,7 @@ const frameAt = (now: number): Frame => {
     : state.tour.on && !state.explore ? 1 + driftAt(state.step, tau) : 1;
   const storyCamera = { x: view[0], y: view[1], scale: (layout.stage.w / view[2]) * push };
   const animationStart = (state.stepMs * 0.55) / 1000;
-  const f = clamp01((tau - animationStart) / ANIMATION_SECONDS);
+  const f = clamp01((tau - animationStart) / animationSeconds(state.step));
   return {
     step: state.step,
     previous: state.previous,
@@ -1630,7 +1739,8 @@ function goTo(target: number) {
   state.target = undefined;
   state.focusBeat = undefined;
   state.hoverBeat = undefined;
-  state.tour.base = (state.stepMs * 0.55) / 1000 + ANIMATION_SECONDS * 0.92;
+  state.subtitleBase = (state.stepMs / 1000) * SUBTITLE_LEAD;
+  state.tour.base = tourStart(index);
   state.tour.from = undefined;
   recenter.hidden = true;
   closeTooltip(true);
@@ -1662,6 +1772,12 @@ function focusBeat(order: number) {
 
 const speeds = [0.75, 1, 1.5, 2];
 
+function documentaryBlend(now: number) {
+  const { on, changedAt, from } = state.documentary;
+  const t = glide((now - changedAt) / 900);
+  return from + ((on ? 1 : 0) - from) * t;
+}
+
 function setPlaying(value: boolean) {
   const tau = (clock() - state.changedAt) / 1000;
   if (!value && state.tour.on) {
@@ -1681,28 +1797,46 @@ function setPlaying(value: boolean) {
   if (value) {
     state.target = undefined;
     state.focusBeat = undefined;
+    if (tau > state.subtitleBase) {
+      // Pressed play while reading: narrate this step from now.
+      state.subtitleBase = tau + 0.3;
+    }
     if (tau > state.tour.base - 0.1 || state.explore) {
-      // Resuming mid-step: start the tour from wherever the camera is now.
-      state.tour.base = tau + 0.2;
+      // Resuming mid-step: start the tour from wherever the camera is now, once the
+      // narration of this step is done.
+      state.tour.base = Math.max(tau + 0.2, tourStart(state.step));
       state.tour.from = viewFromCamera(state.displayed);
       state.explore = undefined;
       recenter.hidden = true;
     }
   }
   state.tour.on = value;
+  if (value !== state.documentary.on) {
+    state.documentary = { on: value, changedAt: clock(), from: documentaryBlend(clock()) };
+    document.body.classList.toggle("is-documentary", value);
+  }
   state.playing = value && state.step < steps.length - 1;
   playButton.setAttribute("aria-pressed", String(state.playing));
   playButton.setAttribute("aria-label", state.playing ? "暂停" : "自动播放");
   document.body.classList.toggle("is-playing", state.playing);
 }
 
+// The tour waits for both the map animation and the subtitles.
+function tourStart(index: number) {
+  const animationEnd = (state.stepMs * 0.55) / 1000 + animationSeconds(index) * 0.92;
+  const subtitles = subtitlePlan(index);
+  return Math.max(animationEnd, subtitles.length ? subtitles[subtitles.length - 1].end + 0.4 : 0);
+}
+
 const holdSeconds = (index: number) => {
   const animationStart = (state.stepMs * 0.55) / 1000;
   const tour = tourPlan(index);
+  const subtitles = subtitlePlan(index);
   return Math.max(
-    animationStart + ANIMATION_SECONDS + 0.8,
-    animationStart + readingSeconds(index) / state.speed,
-    tour.length ? tour[tour.length - 1].end + 0.6 : 0,
+    animationStart + animationSeconds(index) + 0.8,
+    isInterlude(index) || index === 0 ? animationStart + readingSeconds(index) / state.speed : 0,
+    subtitles.length ? subtitles[subtitles.length - 1].end + 0.6 : 0,
+    tour.length ? tour[tour.length - 1].end + 0.4 : 0,
   );
 };
 
@@ -1725,7 +1859,7 @@ document.querySelector(".next")!.addEventListener("click", () => goTo(state.step
 
 // ---------- Exploring the map ----------
 
-const stageCenter = () => [layout.stage.x + layout.stage.w / 2, layout.stage.y + layout.stage.h / 2];
+const stageCenter = () => [layout.center.x, layout.center.y];
 
 const explore = (camera: { x: number; y: number; scale: number }) => {
   state.explore = {
@@ -2027,17 +2161,58 @@ const legacy = query.get("p");
 const frozenStep = query.get("step") ?? (legacy === null ? null : String(Math.floor(Number(legacy))));
 const frozenSeconds = query.get("t") !== null && legacy === null
   ? Number(query.get("t"))
-  : legacy === null ? 30 : 1.2 + (Number(legacy) % 1) * ANIMATION_SECONDS;
+  : legacy === null ? 30 : 1.2 + (Number(legacy) % 1) * 6;
 let frozen: number | undefined = frozenStep === null ? undefined : clamp(Number(frozenStep), 0, steps.length - 1);
 // &tour=1 renders the autoplay camera tour, as a video export would.
-if (query.get("tour") === "1") state.tour = { on: true, base: 0.55 + ANIMATION_SECONDS * 0.92, from: undefined };
+if (query.get("tour") === "1") {
+  state.tour = { on: true, base: 0, from: undefined };
+  state.documentary = { on: true, changedAt: -1e9, from: 1 };
+}
 
 const hashStep = steps.findIndex((step) => `#${step.id}` === window.location.hash);
 const initial = frozen ?? (hashStep > 0 ? hashStep : 0);
 state.step = initial;
 state.changedAt = clock() - (frozen === undefined ? 0 : frozenSeconds * 1000);
+if (state.tour.on) {
+  state.tour.base = tourStart(initial);
+  document.body.classList.add("is-documentary");
+}
+
+const subtitle = document.querySelector<HTMLElement>(".subtitle")!;
+const chapterTag = document.querySelector<HTMLElement>(".chapter-tag")!;
+let subtitleKey = "";
+let chapterTagKey = -1;
+
+const renderDocumentary = (now: number) => {
+  const blend = documentaryBlend(now);
+  const card = { x: layout.stage.x + layout.stage.w / 2, y: layout.stage.y + layout.stage.h / 2 };
+  const full = { x: layout.full.x + layout.full.w / 2, y: layout.full.y + layout.full.h / 2 };
+  layout.center = { x: card.x + (full.x - card.x) * blend, y: card.y + (full.y - card.y) * blend };
+
+  const tau = (now - state.changedAt) / 1000;
+  const lines = state.documentary.on ? subtitlePlan(state.step) : [];
+  const line = lines.find((candidate) => tau >= candidate.start - 0.2 && tau < candidate.end + 0.2);
+  const key = line ? `${state.step}:${line.start}` : "";
+  if (key !== subtitleKey) {
+    subtitleKey = key;
+    if (line) subtitle.innerHTML = line.html;
+  }
+  const lineAlpha = line ? smooth((tau - line.start + 0.2) / 0.35) * (1 - smooth((tau - line.end + 0.15) / 0.35)) : 0;
+  subtitle.style.opacity = lineAlpha.toFixed(3);
+  subtitle.style.transform = `translate(-50%, ${((1 - lineAlpha) * 6).toFixed(1)}px)`;
+
+  const showTag = state.documentary.on && !isInterlude(state.step) && state.step > 0;
+  if (showTag && chapterTagKey !== state.step) {
+    chapterTagKey = state.step;
+    const stepData = steps[state.step];
+    chapterTag.innerHTML = `<span class="chapter-tag-index">${stepLabel(state.step)}</span><span class="chapter-tag-kicker">${stepData.kicker}</span><span class="chapter-tag-title">${stepData.title}</span>`;
+  }
+  const tagAlpha = showTag ? smooth((tau - 0.3) / 0.6) * (1 - smooth((tau - 5) / 0.8)) : 0;
+  chapterTag.style.opacity = tagAlpha.toFixed(3);
+};
 
 const step = (now: number) => {
+  renderDocumentary(now);
   const frame = frameAt(frozen === undefined ? now : state.changedAt + frozenSeconds * 1000);
   state.displayed = frame.camera;
   render(frame);
@@ -2060,7 +2235,10 @@ const loop = (now: number) => {
   requestAnimationFrame(loop);
 };
 
-const relayout = () => measure();
+const relayout = () => {
+  measure();
+  renderDocumentary(clock());
+};
 
 const applyScheme = () => {
   readColors();
@@ -2073,12 +2251,30 @@ showCard(initial, 0);
 updateChrome();
 requestAnimationFrame(loop);
 window.addEventListener("resize", relayout);
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyScheme);
 document.fonts?.ready.then(relayout);
 
 (window as typeof window & { __atlas?: unknown }).__atlas = {
   steps: steps.length,
   goTo,
+  // The attention budget of every step, for checking pacing.
+  timing: () => steps.map((stepData, index) => {
+    const subtitles = subtitlePlan(index);
+    const tourPart = (stepData.beats ?? []).slice(0, TOUR_BEATS)
+      .reduce((total, beat) => total + FLY_SECONDS + beatHold(beat), 0);
+    const hold = Math.max(
+      subtitles.length ? subtitles[subtitles.length - 1].end + 0.6 : 0,
+      tourStart(index) + (tourPart ? tourPart + FLY_SECONDS + 0.4 : 0),
+      (state.stepMs * 0.55) / 1000 + animationSeconds(index) + 0.8,
+      isInterlude(index) || index === 0 ? readingSeconds(index) / state.speed : 0,
+    );
+    return {
+      id: stepData.id,
+      hold: +hold.toFixed(1),
+      animation: +animationSeconds(index).toFixed(1),
+      subtitles: subtitles.length ? +subtitles[subtitles.length - 1].end.toFixed(1) : 0,
+      beats: stepData.beats?.length ?? 0,
+    };
+  }),
   // Where a city is drawn right now, for tests that hover it.
   placeScreen: (id: PlaceId) => placeNodes.find((node) => node.id === id)?.screen,
   // Deterministic video export: begin autoplay from a step on a virtual clock, then
